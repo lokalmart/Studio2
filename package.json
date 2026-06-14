@@ -1,0 +1,16 @@
+{
+  "name": "lokalmart-studio-v2-netlify-direct-upload",
+  "version": "2.0.1",
+  "private": true,
+  "scripts": {
+    "lint": "node -c netlify/functions/odoo.js",
+    "start": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.38.1"
+  }
+}

@@ -1,0 +1,4 @@
+/api/odoo /.netlify/functions/odoo 200
+/assistant /#assistant 200
+/ai /#assistant 200
+/* /index.html 200

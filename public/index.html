@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#f97316" />
+  <title>Lokalmart Studio v2</title>
+  <link rel="manifest" href="/manifest.json" />
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    :root{
+      --bg:#fff7ed;--surface:#ffffff;--surface2:#fffaf5;--ink:#1f2937;--muted:#6b7280;--line:#fed7aa;--brand:#f97316;--brand2:#c2410c;--ok:#16a34a;--bad:#dc2626;--warn:#d97706;--shadow:0 24px 80px rgba(124,45,18,.18);--r:28px;
+    }
+    *{box-sizing:border-box} html,body{margin:0;height:100%;overflow:hidden;background:linear-gradient(145deg,#fff7ed,#ffedd5 45%,#fef3c7);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif} button,input,select,textarea{font:inherit} button{cursor:pointer} .app{height:100dvh;display:grid;grid-template-rows:auto 1fr auto;max-width:1480px;margin:0 auto;position:relative} .topbar{height:72px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 18px}.brand{display:flex;align-items:center;gap:12px;min-width:0}.logo{width:48px;height:48px;border-radius:18px;background:radial-gradient(circle at 28% 25%,#fde68a,#fb923c 42%,#c2410c);display:grid;place-items:center;color:white;font-weight:950;box-shadow:0 12px 30px rgba(194,65,12,.26)}.brand h1{margin:0;font-size:18px;letter-spacing:-.03em}.brand p{margin:2px 0 0;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.target-chip{display:flex;gap:9px;align-items:center;background:rgba(255,255,255,.72);backdrop-filter:blur(16px);border:1px solid var(--line);padding:9px 12px;border-radius:999px;box-shadow:0 10px 25px rgba(124,45,18,.08);max-width:50vw}.dot{width:9px;height:9px;border-radius:50%;background:var(--bad);box-shadow:0 0 0 4px rgba(220,38,38,.09)}.dot.ok{background:var(--ok);box-shadow:0 0 0 4px rgba(22,163,74,.11)}.target-chip span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.iconbtn,.btn{border:0;border-radius:999px;background:var(--ink);color:white;font-weight:850;padding:11px 14px;display:inline-flex;align-items:center;gap:8px;box-shadow:0 10px 24px rgba(31,41,55,.17)}.iconbtn{width:44px;height:44px;justify-content:center;padding:0}.btn.secondary{background:white;color:var(--ink);border:1px solid var(--line);box-shadow:none}.btn.brand{background:linear-gradient(135deg,var(--brand),var(--brand2));color:white}.btn.good{background:var(--ok)}.btn.bad{background:var(--bad)}.btn:disabled{opacity:.45;cursor:not-allowed}.shell{min-height:0;display:grid;grid-template-columns:92px 1fr;gap:14px;padding:0 18px 12px}.rail{display:flex;flex-direction:column;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:30px;background:rgba(255,255,255,.64);backdrop-filter:blur(18px);box-shadow:var(--shadow);overflow:auto}.rail button{width:62px;min-height:62px;border:0;border-radius:23px;background:white;color:var(--muted);display:grid;place-items:center;gap:2px;font-size:10px;font-weight:850;border:1px solid transparent}.rail button strong{font-size:20px}.rail button.active{color:white;background:linear-gradient(135deg,var(--brand),var(--brand2));box-shadow:0 14px 28px rgba(249,115,22,.28)}.stage{min-width:0;min-height:0;position:relative;border:1px solid var(--line);border-radius:34px;background:rgba(255,255,255,.72);backdrop-filter:blur(20px);box-shadow:var(--shadow);overflow:hidden}.slides{height:100%;display:flex;transition:transform .38s cubic-bezier(.2,.9,.2,1)}.slide{min-width:100%;height:100%;overflow:auto;padding:22px;scrollbar-width:thin}.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:18px;min-height:100%}.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:0 12px 35px rgba(124,45,18,.08)}.card.soft{background:rgba(255,250,245,.84)}.section-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}.section-title h2,.section-title h3{margin:0;letter-spacing:-.04em}.section-title h2{font-size:30px}.section-title p{margin:6px 0 0;color:var(--muted);line-height:1.5}.grid{display:grid;gap:14px}.grid.two{grid-template-columns:1fr 1fr}.grid.three{grid-template-columns:repeat(3,1fr)}.feature-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.feature{border:1px solid var(--line);background:linear-gradient(180deg,#fff,#fff7ed);border-radius:28px;padding:18px;text-align:left;min-height:158px;display:flex;flex-direction:column;justify-content:space-between;transition:.2s}.feature:hover{transform:translateY(-2px);box-shadow:0 18px 36px rgba(124,45,18,.12)}.feature .ico{font-size:28px}.feature h3{margin:12px 0 6px}.feature p{margin:0;color:var(--muted);line-height:1.45}.metric{border:1px solid var(--line);background:#fff;border-radius:24px;padding:14px}.metric strong{font-size:26px}.metric span{display:block;color:var(--muted);font-size:12px;margin-top:3px}.drop{border:2px dashed #fdba74;border-radius:30px;min-height:210px;display:grid;place-items:center;text-align:center;padding:22px;background:linear-gradient(135deg,#fff7ed,#fff);position:relative;overflow:hidden}.drop input{position:absolute;inset:0;opacity:0;cursor:pointer}.drop h3{margin:0 0 8px}.pillrow{display:flex;gap:8px;flex-wrap:wrap}.pill{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px;font-weight:800}.field{display:grid;gap:6px}.field label{font-size:12px;font-weight:850;color:#7c2d12}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);background:white;border-radius:18px;padding:12px;color:var(--ink);outline:none}.field textarea{min-height:110px;resize:vertical}.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:24px;background:white;max-height:56vh}.table{width:100%;border-collapse:collapse;font-size:13px}.table th,.table td{padding:10px;border-bottom:1px solid #ffedd5;text-align:left;vertical-align:top;white-space:nowrap}.table th{position:sticky;top:0;background:#fff7ed;z-index:1;color:#7c2d12}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:12px 0}.log{height:240px;overflow:auto;border-radius:24px;background:#111827;color:#f9fafb;padding:14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap}.jsonbox{height:50vh;overflow:auto;border-radius:24px;background:#0f172a;color:#e5e7eb;padding:16px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap}.progress{height:12px;background:#ffedd5;border-radius:999px;overflow:hidden}.progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--brand),var(--brand2));transition:.2s}.bottom{display:none}.modal{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;place-items:end center;z-index:30;padding:18px}.modal.show{display:grid}.sheet{width:min(760px,100%);max-height:86vh;overflow:auto;border-radius:34px;background:white;border:1px solid var(--line);box-shadow:0 24px 90px rgba(15,23,42,.28);padding:20px}.scanbox{aspect-ratio:16/10;background:#111827;border-radius:30px;overflow:hidden;display:grid;place-items:center;color:white;position:relative}.scanbox video{width:100%;height:100%;object-fit:cover}.scanline{position:absolute;left:8%;right:8%;height:3px;background:#22c55e;box-shadow:0 0 20px #22c55e;animation:scan 1.5s infinite alternate}@keyframes scan{from{top:18%}to{top:78%}}.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(120px);background:#111827;color:white;border-radius:999px;padding:12px 18px;font-weight:850;z-index:50;transition:.25s;box-shadow:0 16px 40px rgba(0,0,0,.2)}.toast.show{transform:translateX(-50%) translateY(0)}.hint{font-size:12px;color:var(--muted);line-height:1.45}.danger{color:var(--bad)}.oktxt{color:var(--ok)}.warntxt{color:var(--warn)}.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#fff7ed;border:1px solid var(--line);padding:2px 6px;border-radius:8px}@media(max-width:980px){.topbar{height:68px;padding:10px 12px}.target-chip{max-width:42vw}.shell{grid-template-columns:1fr;padding:0 10px 82px}.rail{display:none}.stage{border-radius:28px}.slide{padding:14px}.hero,.grid.two,.grid.three,.feature-grid{grid-template-columns:1fr}.bottom{display:flex;position:fixed;left:10px;right:10px;bottom:10px;height:64px;border:1px solid var(--line);border-radius:28px;background:rgba(255,255,255,.88);backdrop-filter:blur(18px);z-index:20;box-shadow:0 18px 60px rgba(124,45,18,.2);align-items:center;justify-content:space-around}.bottom button{border:0;background:transparent;color:var(--muted);display:grid;place-items:center;font-size:10px;font-weight:850}.bottom button strong{font-size:20px}.bottom button.active{color:var(--brand2)}.section-title h2{font-size:25px}.tablewrap{max-height:48vh}.brand p{max-width:42vw}.btn{padding:10px 12px}.hide-mobile{display:none}}@media(max-width:520px){.target-chip span{max-width:105px}.logo{width:42px;height:42px}.brand h1{font-size:16px}.section-title{display:block}.toolbar{align-items:stretch}.toolbar .btn{justify-content:center;width:100%}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">LM</div>
+      <div>
+        <h1>Lokalmart Studio v2</h1>
+        <p>Importer, scanner, full export, dan asisten konteks Odoo.</p>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;min-width:0">
+      <button class="target-chip" id="targetChip" type="button" onclick="openSettings()"><i class="dot" id="targetDot"></i><span id="targetLabel">Target Odoo belum dipilih</span></button>
+      <button class="iconbtn" type="button" onclick="openSettings()">⚙️</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <nav class="rail" id="rail"></nav>
+    <section class="stage">
+      <div class="slides" id="slides">
+        <section class="slide" data-view="home"></section>
+        <section class="slide" data-view="import"></section>
+        <section class="slide" data-view="barcode"></section>
+        <section class="slide" data-view="assistant"></section>
+        <section class="slide" data-view="project"></section>
+        <section class="slide" data-view="export"></section>
+        <section class="slide" data-view="guide"></section>
+        <section class="slide" data-view="logs"></section>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom" id="bottom"></nav>
+</div>
+
+<div class="modal" id="settingsModal" onclick="if(event.target.id==='settingsModal')closeSettings()">
+  <div class="sheet">
+    <div class="section-title">
+      <div><h2>Pengaturan Target Odoo</h2><p>Target disimpan di browser perangkat ini. Pakai API key Odoo sebagai password bila tersedia.</p></div>
+      <button class="iconbtn" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="grid two">
+      <div class="card soft">
+        <h3>Target aktif</h3>
+        <div id="targetList" class="grid"></div>
+      </div>
+      <div class="card soft">
+        <h3>Tambah / Edit</h3>
+        <div class="grid">
+          <div class="field"><label>Nama Target</label><input id="setName" placeholder="Odoo Lokalmart" /></div>
+          <div class="field"><label>URL</label><input id="setUrl" placeholder="https://edu-lokalmart.odoo.com" /></div>
+          <div class="field"><label>Database</label><input id="setDb" placeholder="nama_database" /></div>
+          <div class="field"><label>Username / Email</label><input id="setUser" placeholder="admin@example.com" /></div>
+          <div class="field"><label>Password / API Key</label><input id="setPass" type="password" placeholder="••••••••" /></div>
+          <div class="pillrow"><button class="btn brand" onclick="saveTarget()">Simpan Target</button><button class="btn secondary" onclick="testConnection()">Tes Koneksi</button><button class="btn bad" onclick="deleteActiveTarget()">Hapus Aktif</button></div>
+          <p class="hint">Catatan keamanan: password/API key tersimpan di localStorage browser. Gunakan hanya di perangkat admin pribadi.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const VIEWS = [
+  ['home','⌂','Home'], ['import','⇪','Import'], ['barcode','▦','Scan'], ['assistant','AI','Asisten'], ['project','▤','Project'], ['export','⇩','Export'], ['guide','?','Guide'], ['logs','◷','Log']
+];
+const $ = id => document.getElementById(id);
+const state = {
+  view:'home', targets:[], activeTargetId:null, workbook:null, workbookName:'', sheets:[], activeSheet:'', rows:[], editedRows:new Map(), logs:[], importing:false, lastJson:null, projects:[], selectedProjectId:null, scanner:null, scanStream:null
+};
+
+function init(){
+  loadState(); renderNav(); renderAll(); updateTargetUI(); routeFromHash();
+  window.addEventListener('hashchange', routeFromHash);
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
+function routeFromHash(){ const h=(location.hash||'#home').replace('#',''); if(VIEWS.some(v=>v[0]===h)) go(h,false); }
+function persist(){ localStorage.setItem('lm_studio_v2_targets', JSON.stringify(state.targets)); localStorage.setItem('lm_studio_v2_active_target', state.activeTargetId||''); }
+function loadState(){ try{state.targets=JSON.parse(localStorage.getItem('lm_studio_v2_targets')||'[]')}catch{state.targets=[]} state.activeTargetId=localStorage.getItem('lm_studio_v2_active_target')||null; }
+function activeTarget(){ return state.targets.find(t=>t.id===state.activeTargetId)||null; }
+function toast(msg){ const el=$('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>el.classList.remove('show'),2600); }
+function log(msg, data){ const line=`[${new Date().toLocaleTimeString('id-ID')}] ${msg}`+(data?'\n'+safeJson(data):''); state.logs.unshift(line); state.logs=state.logs.slice(0,400); renderLogs(); }
+function safeJson(x){ try{return JSON.stringify(x,null,2)}catch{return String(x)} }
+function downloadText(name,text,mime='text/plain'){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:mime})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
+function downloadBase64(name,base64,mime){ const bin=atob(base64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([bytes],{type:mime||'application/octet-stream'})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
+function go(view,push=true){ state.view=view; const idx=VIEWS.findIndex(v=>v[0]===view); $('slides').style.transform=`translateX(-${idx*100}%)`; document.querySelectorAll('[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===view)); if(push) history.replaceState(null,'','#'+view); if(view==='logs') renderLogs(); }
+function renderNav(){ const html=VIEWS.map(v=>`<button data-nav="${v[0]}" onclick="go('${v[0]}')"><strong>${v[1]}</strong><span>${v[2]}</span></button>`).join(''); $('rail').innerHTML=html; $('bottom').innerHTML=html; }
+function updateTargetUI(){ const t=activeTarget(); $('targetLabel').textContent=t?`${t.name} · ${t.db}`:'Target Odoo belum dipilih'; $('targetDot').classList.toggle('ok',!!t); renderTargetList(); }
+function requireTarget(){ const t=activeTarget(); if(!t){ openSettings(); throw new Error('Pilih target Odoo dulu.'); } return t; }
+function readSettingsTarget(){
+  return {
+    id: state.activeTargetId || ('t_' + Date.now()),
+    name: $('setName').value.trim() || 'Odoo Lokalmart',
+    url: $('setUrl').value.trim().replace(/\/+$/,''),
+    db: $('setDb').value.trim(),
+    username: $('setUser').value.trim(),
+    password: $('setPass').value
+  };
+}
+function validateTarget(t){
+  if(!t.url || !t.db || !t.username || !t.password) throw new Error('Lengkapi URL, database, username, dan password/API key.');
+  if(!/^https?:\/\//i.test(t.url)) throw new Error('URL harus diawali https:// atau http://');
+}
+async function api(action,payload={},options={}){ const target=options.target||requireTarget(); const res=await fetch('/api/odoo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,target,payload})}); const text=await res.text(); let json; try{json=JSON.parse(text)}catch{throw new Error(`Server non-JSON HTTP ${res.status}: ${text.slice(0,800)}`)} if(!res.ok||!json.ok) throw new Error(json.error||`HTTP ${res.status}`); return json; }
+
+function renderAll(){ renderHome(); renderImport(); renderBarcode(); renderAssistant(); renderProject(); renderExport(); renderGuide(); renderLogs(); }
+function renderHome(){ document.querySelector('[data-view="home"]').innerHTML=`
+  <div class="hero">
+    <div class="card">
+      <div class="section-title"><div><h2>Mulai dari pekerjaan admin, bukan dari form.</h2><p>Studio v2 dibuat ulang lebih stabil: satu API utama, satu UI superapp, batch aman Vercel, dan export konteks untuk ChatGPT.</p></div></div>
+      <div class="feature-grid">
+        ${feature('import','⇪','Import XLSX','Preview, preflight, edit ringan, lalu import batch ke Odoo dengan external ID.')}
+        ${feature('barcode','▦','Input Barcode','Scan kamera atau input manual untuk kurasi produk lapangan.')}
+        ${feature('assistant','AI','Asisten Lokalmart','Scan schema, audit data, export konteks global untuk ChatGPT.')}
+        ${feature('project','▤','Export Project','Pilih satu project Odoo lalu export task hierarchy, milestone, update, dan chatter ringkas.')}
+        ${feature('export','⇩','Full Export','Backup parsial / konteks database ke XLSX tanpa mengubah record.')}
+        ${feature('guide','?','Panduan Aman','Aturan XLSX import-ready untuk Odoo Online dan Lokalmart.')}
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card soft"><h3>Status Studio</h3><div class="grid three"><div class="metric"><strong>${state.sheets.length}</strong><span>Sheet terbaca</span></div><div class="metric"><strong>${state.rows.length}</strong><span>Rows aktif</span></div><div class="metric"><strong>${state.logs.length}</strong><span>Log</span></div></div><div style="margin-top:14px" class="pillrow"><button class="btn brand" onclick="testConnection()">Tes Koneksi</button><button class="btn secondary" onclick="openSettings()">Target</button></div></div>
+      <div class="card"><h3>Kenapa v2 lebih aman?</h3><p class="hint">File lama mudah rusak karena banyak <span class="code">lib/*.js</span> saling require. Versi ini memakai satu serverless function <span class="code">/api/odoo</span> dan parsing XLSX di browser, sehingga lebih ringan dan mudah didiagnosis.</p></div>
+      <div class="card"><h3>Shortcut</h3><div class="pillrow"><button class="btn secondary" onclick="go('project')">Export Project untuk ChatGPT</button><button class="btn secondary" onclick="go('import')">Import XLSX</button><button class="btn secondary" onclick="go('assistant')">Audit Database</button></div></div>
+    </div>
+  </div>`; }
+function feature(view,ico,title,desc){ return `<button class="feature" onclick="go('${view}')"><div><div class="ico">${ico}</div><h3>${title}</h3><p>${desc}</p></div><span class="pill">Buka</span></button>`; }
+
+function renderImport(){ document.querySelector('[data-view="import"]').innerHTML=`
+  <div class="grid">
+    <div class="section-title"><div><h2>Import XLSX</h2><p>Upload workbook, pilih sheet, preflight, lalu import per batch. Parser XLSX berjalan di browser agar serverless tidak berat.</p></div><button class="btn secondary" onclick="clearWorkbook()">Reset</button></div>
+    <div class="grid two">
+      <div class="card">
+        <div class="drop"><input type="file" accept=".xlsx,.xls" onchange="handleFile(this.files[0])" /><div><h3>Tarik XLSX ke sini</h3><p class="hint">Sheet harus punya <span class="code">_model</span> atau pilih model target. External ID memakai <span class="code">_external_id</span>.</p><div class="pillrow" style="justify-content:center"><span class="pill">__action</span><span class="pill">_external_id</span><span class="pill">_model</span><span class="pill">field_external_id</span></div></div></div>
+        <div class="toolbar"><strong>${state.workbookName||'Belum ada file'}</strong><span class="pill">${state.sheets.length} sheet</span></div>
+        <div class="grid two"><div class="field"><label>Sheet aktif</label><select id="sheetSelect" onchange="selectSheet(this.value)">${state.sheets.map(s=>`<option ${s===state.activeSheet?'selected':''}>${escapeHtml(s)}</option>`).join('')}</select></div><div class="field"><label>Model fallback</label><input id="fallbackModel" placeholder="mis. project.task" /></div></div>
+        <div class="toolbar"><button class="btn secondary" onclick="runPreflight()">Preflight</button><button class="btn brand" onclick="startImport()" ${!state.rows.length?'disabled':''}>Mulai Import</button><button class="btn secondary" onclick="importPhotos()" ${!state.rows.length?'disabled':''}>Import Foto</button></div>
+        <div class="progress"><i id="importProgress"></i></div><p class="hint" id="importStatus">Menunggu file.</p>
+      </div>
+      <div class="card"><div class="section-title"><div><h3>Preview Rows</h3><p>${state.rows.length} row di sheet aktif.</p></div><button class="btn secondary" onclick="downloadActiveSheetJson()">Download JSON</button></div><div class="tablewrap" id="previewTable"></div></div>
+    </div>
+  </div>`; renderPreviewTable(); }
+function renderPreviewTable(){ const box=$('previewTable'); if(!box)return; const rows=state.rows.slice(0,80); if(!rows.length){box.innerHTML='<p class="hint" style="padding:14px">Belum ada row.</p>';return} const cols=[...new Set(rows.flatMap(r=>Object.keys(r)))].slice(0,18); box.innerHTML=`<table class="table"><thead><tr>${cols.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r,i)=>`<tr onclick="editRow(${i})">${cols.map(c=>`<td>${escapeHtml(short(r[c]))}</td>`).join('')}</tr>`).join('')}</tbody></table>`; }
+async function handleFile(file){ if(!file)return; if(!window.XLSX){toast('SheetJS belum termuat. Cek internet/CDN.');return} const buf=await file.arrayBuffer(); state.workbook=XLSX.read(buf,{type:'array'}); state.workbookName=file.name; state.sheets=state.workbook.SheetNames; state.activeSheet=state.sheets[0]||''; loadRowsFromActiveSheet(); log('File XLSX terbaca',{name:file.name,sheets:state.sheets}); renderImport(); }
+function loadRowsFromActiveSheet(){ if(!state.workbook||!state.activeSheet){state.rows=[];return} const ws=state.workbook.Sheets[state.activeSheet]; state.rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false}); }
+function selectSheet(name){ state.activeSheet=name; loadRowsFromActiveSheet(); renderImport(); }
+function clearWorkbook(){ state.workbook=null; state.workbookName=''; state.sheets=[]; state.activeSheet=''; state.rows=[]; state.editedRows.clear(); renderImport(); }
+function runPreflight(){ const rows=state.rows; const issues=[]; if(!rows.length)issues.push('Sheet kosong.'); const cols=[...new Set(rows.flatMap(r=>Object.keys(r)))]; if(!cols.includes('_model')&&!$('fallbackModel')?.value)issues.push('Tidak ada _model dan model fallback kosong.'); if(!cols.includes('_external_id'))issues.push('Tidak ada _external_id. Import create tetap bisa jalan, tapi upsert aman menjadi sulit.'); const modelCounts={}; rows.forEach(r=>{const m=r._model||$('fallbackModel')?.value||'(kosong)';modelCounts[m]=(modelCounts[m]||0)+1}); state.lastJson={sheet:state.activeSheet,rows:rows.length,columns:cols,modelCounts,issues}; log('Preflight selesai',state.lastJson); toast(issues.length?`${issues.length} warning preflight`:'Preflight aman'); go('logs'); }
+async function startImport(){ try{ const model=$('fallbackModel')?.value.trim(); const batch=Number(prompt('Batch per request?', '40')||40); state.importing=true; let done=0, total=state.rows.length, summary={processed:0,created:0,updated:0,skipped:0,errors:[]}; for(let offset=0;offset<total;offset+=batch){ const rows=state.rows.slice(offset,offset+batch); $('importStatus').textContent=`Import ${offset+1}-${Math.min(offset+batch,total)} dari ${total}`; $('importProgress').style.width=`${Math.round(offset/total*100)}%`; const res=await api('import_rows',{rows,model,offset}); Object.assign(summary,{processed:summary.processed+(res.report.processed||0),created:summary.created+(res.report.created||0),updated:summary.updated+(res.report.updated||0),skipped:summary.skipped+(res.report.skipped||0)}); summary.errors.push(...(res.report.errors||[])); log(`Batch import selesai ${offset}`,res.report); } $('importProgress').style.width='100%'; $('importStatus').textContent='Import selesai.'; log('Import selesai',summary); toast('Import selesai'); }catch(e){log('Import gagal',{error:e.message});toast(e.message)}finally{state.importing=false} }
+async function importPhotos(){ try{ const model=prompt('Model foto target?', 'product.template')||'product.template'; const imageField=prompt('Field foto?', 'image_1920')||'image_1920'; const res=await api('import_photos',{rows:state.rows,model,imageField}); log('Import foto selesai',res.report); toast('Import foto selesai'); go('logs'); }catch(e){log('Import foto gagal',{error:e.message});toast(e.message)} }
+function downloadActiveSheetJson(){ downloadText(`${state.activeSheet||'sheet'}.json`, safeJson(state.rows),'application/json'); }
+function editRow(i){ const row=state.rows[i]; const text=prompt('Edit row JSON', safeJson(row)); if(!text)return; try{ state.rows[i]=JSON.parse(text); renderPreviewTable(); toast('Row diedit di memori browser'); }catch(e){toast('JSON tidak valid')} }
+
+function renderBarcode(){ document.querySelector('[data-view="barcode"]').innerHTML=`
+  <div class="grid two">
+    <div class="card"><div class="section-title"><div><h2>Input Barcode</h2><p>Scan kamera bila browser mendukung BarcodeDetector, atau isi manual. Cocok untuk surveyor/kurasi produk.</p></div></div><div class="scanbox" id="scanBox"><span>Kamera belum aktif</span><div class="scanline"></div></div><div class="toolbar"><button class="btn brand" onclick="startScanner()">Mulai Kamera</button><button class="btn secondary" onclick="stopScanner()">Stop</button></div><div class="field"><label>Input manual / hasil scan</label><input id="barcodeValue" placeholder="Kode barcode" onkeydown="if(event.key==='Enter')lookupBarcode()" /></div><div class="toolbar"><button class="btn secondary" onclick="lookupBarcode()">Cari di Odoo</button><button class="btn secondary" onclick="matchWorkbookBarcode()">Cari di Workbook</button></div></div>
+    <div class="card"><h3>Hasil</h3><div id="barcodeResult" class="jsonbox">Belum ada scan.</div></div>
+  </div>`; }
+async function startScanner(){ try{ const box=$('scanBox'); stopScanner(); const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}); state.scanStream=stream; const video=document.createElement('video'); video.setAttribute('playsinline',''); video.srcObject=stream; await video.play(); box.innerHTML=''; box.appendChild(video); const line=document.createElement('div'); line.className='scanline'; box.appendChild(line); if('BarcodeDetector' in window){ const detector=new BarcodeDetector({formats:['ean_13','ean_8','code_128','qr_code','upc_a','upc_e']}); const tick=async()=>{ if(!state.scanStream)return; try{ const codes=await detector.detect(video); if(codes&&codes[0]){ $('barcodeValue').value=codes[0].rawValue; log('Barcode terbaca',{value:codes[0].rawValue}); toast('Barcode terbaca'); } }catch{} requestAnimationFrame(tick); }; tick(); }else{ toast('BarcodeDetector belum didukung. Pakai input manual.'); } }catch(e){toast(e.message);log('Scanner gagal',{error:e.message})} }
+function stopScanner(){ if(state.scanStream){ state.scanStream.getTracks().forEach(t=>t.stop()); state.scanStream=null; } }
+async function lookupBarcode(){ try{ const value=$('barcodeValue').value.trim(); if(!value)throw new Error('Barcode kosong.'); const res=await api('read_rpc',{model:'product.template',method:'search_read',args:[[['barcode','=',value]]],kwargs:{fields:['id','name','default_code','barcode','list_price','categ_id'],limit:10}}); $('barcodeResult').textContent=safeJson(res.result); log('Lookup barcode Odoo',res.result); }catch(e){$('barcodeResult').textContent=e.message;log('Lookup barcode gagal',{error:e.message})} }
+function matchWorkbookBarcode(){ const value=$('barcodeValue').value.trim(); const rows=state.rows.filter(r=>String(r.barcode||r.default_code||r.code||'').trim()===value); $('barcodeResult').textContent=safeJson(rows.length?rows:{message:'Tidak ditemukan di workbook aktif'}); }
+
+function renderAssistant(){ document.querySelector('[data-view="assistant"]').innerHTML=`
+  <div class="grid">
+    <div class="section-title"><div><h2>Asisten Lokalmart</h2><p>Read-only tools agar ChatGPT paham kondisi database: schema, audit, context, dan export XLSX.</p></div></div>
+    <div class="grid three">
+      <div class="card"><h3>Health</h3><p class="hint">Tes target dan model inti.</p><button class="btn brand" onclick="runAssistant('ai_health')">Cek Health</button></div>
+      <div class="card"><h3>Schema Scan</h3><p class="hint">Scan model, fields, custom fields x_.</p><button class="btn brand" onclick="runAssistant('ai_schema_scan')">Scan Struktur</button></div>
+      <div class="card"><h3>Data Audit</h3><p class="hint">Cari record penting dan potensi data kosong.</p><button class="btn brand" onclick="runAssistant('ai_data_audit')">Audit Data</button></div>
+      <div class="card"><h3>Context JSON</h3><p class="hint">Export konteks global untuk ditempel ke ChatGPT.</p><button class="btn brand" onclick="runAssistant('ai_context_export')">Export Context</button></div>
+      <div class="card"><h3>Context XLSX</h3><p class="hint">Download konteks database sebagai workbook.</p><button class="btn brand" onclick="downloadAssistantXlsx()">Download XLSX</button></div>
+      <div class="card"><h3>Read RPC</h3><p class="hint">Query read-only manual untuk diagnosis.</p><button class="btn secondary" onclick="manualRpc()">Buka Query</button></div>
+    </div>
+    <div class="card"><div class="toolbar"><strong>Hasil</strong><div class="pillrow"><button class="btn secondary" onclick="copyLastJson()">Copy JSON</button><button class="btn secondary" onclick="downloadText('lokalmart_context.json',safeJson(state.lastJson),'application/json')">Download JSON</button></div></div><div class="jsonbox" id="assistantResult">Belum ada hasil.</div></div>
+  </div>`; }
+async function runAssistant(action){ try{ const res=await api(action,{limit:100}); state.lastJson=res.scan||res.audit||res.context||res.assistant||res.result||res; $('assistantResult').textContent=safeJson(state.lastJson); log(`Assistant ${action} selesai`,state.lastJson); toast('Selesai'); }catch(e){$('assistantResult').textContent=e.message;log(`Assistant ${action} gagal`,{error:e.message});toast(e.message)} }
+async function downloadAssistantXlsx(){ try{ const res=await api('ai_export_xlsx',{limit:300}); downloadBase64(res.export.filename,res.export.base64,res.export.mime); log('Assistant XLSX dibuat',{filename:res.export.filename}); }catch(e){toast(e.message);log('Assistant XLSX gagal',{error:e.message})} }
+async function manualRpc(){ const model=prompt('Model read-only','project.task'); if(!model)return; const method=prompt('Method: search_read/search_count/read/fields_get/search','search_read'); if(!method)return; let payload={model,method,args:[[]],kwargs:{limit:20}}; const raw=prompt('Payload JSON', safeJson(payload)); if(!raw)return; try{ payload=JSON.parse(raw); const res=await api('read_rpc',payload); state.lastJson=res.result; $('assistantResult').textContent=safeJson(res.result); log('Manual RPC selesai',res.result); }catch(e){toast(e.message);log('Manual RPC gagal',{error:e.message})} }
+function copyLastJson(){ navigator.clipboard.writeText(safeJson(state.lastJson||{})).then(()=>toast('JSON disalin')); }
+
+function renderProject(){ document.querySelector('[data-view="project"]').innerHTML=`
+  <div class="grid">
+    <div class="section-title"><div><h2>Export Project Terpilih untuk ChatGPT</h2><p>Pilih satu project Odoo saja, lalu export project + task/subtask hierarchy + milestone + update + chatter ringkas.</p></div><button class="btn brand" onclick="loadProjects()">Muat Project</button></div>
+    <div class="grid two">
+      <div class="card"><div class="field"><label>Pilih Project</label><select id="projectSelect" onchange="state.selectedProjectId=this.value"><option value="">Belum dimuat</option>${state.projects.map(p=>`<option value="${p.id}" ${String(state.selectedProjectId)===String(p.id)?'selected':''}>${escapeHtml(p.display_name||p.name||('Project '+p.id))} · #${p.id}</option>`).join('')}</select></div><div class="toolbar"><button class="btn brand" onclick="exportProjectJson()">Export JSON + Prompt</button><button class="btn secondary" onclick="exportProjectXlsx()">Download XLSX</button></div><p class="hint">Inilah fitur yang kamu minta: hanya satu project yang dipilih, bukan seluruh database. Hasilnya bisa langsung ditempel ke ChatGPT agar saya paham perkembangan terakhir project itu.</p></div>
+      <div class="card"><div class="toolbar"><strong>Hasil Project Context</strong><div class="pillrow"><button class="btn secondary" onclick="copyProjectPrompt()">Copy Prompt ChatGPT</button><button class="btn secondary" onclick="downloadText('lokalmart_project_context.json',safeJson(state.lastJson),'application/json')">Download JSON</button></div></div><div class="jsonbox" id="projectResult">Klik Muat Project.</div></div>
+    </div>
+  </div>`; }
+async function loadProjects(){ try{ const res=await api('ai_project_list',{limit:300,includeArchived:true}); state.projects=res.projects||[]; log('Daftar project dimuat',{count:state.projects.length}); toast(`${state.projects.length} project dimuat`); renderProject(); }catch(e){log('Muat project gagal',{error:e.message});toast(e.message)} }
+async function exportProjectJson(){ try{ const id=$('projectSelect')?.value||state.selectedProjectId; if(!id)throw new Error('Pilih project dulu.'); const res=await api('ai_project_context_export',{projectId:Number(id),taskLimit:2000,messageLimit:160}); state.lastJson=res.context; $('projectResult').textContent=safeJson(res.context); log('Project context diexport',{projectId:id,tasks:res.context.tasks?.length}); toast('Project context siap'); }catch(e){$('projectResult').textContent=e.message;log('Project export gagal',{error:e.message});toast(e.message)} }
+async function exportProjectXlsx(){ try{ const id=$('projectSelect')?.value||state.selectedProjectId; if(!id)throw new Error('Pilih project dulu.'); const res=await api('ai_project_xlsx_export',{projectId:Number(id),taskLimit:2000,messageLimit:160}); state.lastJson=res.context; downloadBase64(res.export.filename,res.export.base64,res.export.mime); $('projectResult').textContent=safeJson(res.context); log('Project XLSX diexport',{filename:res.export.filename}); toast('XLSX project diunduh'); }catch(e){log('Project XLSX gagal',{error:e.message});toast(e.message)} }
+function copyProjectPrompt(){ const prompt=state.lastJson?.chatgpt_prompt||safeJson(state.lastJson||{}); navigator.clipboard.writeText(prompt).then(()=>toast('Prompt disalin')); }
+
+function renderExport(){ document.querySelector('[data-view="export"]').innerHTML=`
+  <div class="grid two">
+    <div class="card"><div class="section-title"><div><h2>Full / Partial Export</h2><p>Backup ringan atau export konteks database ke XLSX. Ini read-only.</p></div></div><div class="field"><label>Model yang diexport</label><textarea id="exportModels">project.project
+project.task
+project.milestone
+project.update
+product.template
+product.category
+res.partner
+ir.model.fields
+ir.model.data</textarea></div><div class="field"><label>Limit per model</label><input id="exportLimit" value="800" /></div><div class="toolbar"><button class="btn brand" onclick="runFullExport()">Download XLSX Export</button><button class="btn secondary" onclick="runAssistant('ai_context_export');go('assistant')">Context JSON</button></div></div>
+    <div class="card"><h3>Prinsip Export</h3><p class="hint">Export ini bukan backup database penuh seperti dump PostgreSQL. Ini adalah export operasional untuk ChatGPT, migrasi ringan, audit, dan import ulang bertahap. Untuk backup legal penuh tetap gunakan fasilitas backup Odoo/Vercel/GitHub sesuai sistem.</p><div class="pillrow"><span class="pill">read-only</span><span class="pill">xlsx</span><span class="pill">project-aware</span><span class="pill">ChatGPT-ready</span></div></div>
+  </div>`; }
+async function runFullExport(){ try{ const models=$('exportModels').value.split(/\n|,/).map(s=>s.trim()).filter(Boolean); const limit=Number($('exportLimit').value||800); const res=await api('full_export_xlsx',{models,limit}); downloadBase64(res.export.filename,res.export.base64,res.export.mime); log('Full export selesai',{filename:res.export.filename,models}); toast('Export XLSX diunduh'); }catch(e){log('Full export gagal',{error:e.message});toast(e.message)} }
+
+function renderGuide(){ document.querySelector('[data-view="guide"]').innerHTML=`
+  <div class="grid two">
+    <div class="card"><h2>Panduan XLSX Aman Lokalmart</h2><p>Format yang paling aman untuk Odoo Online dan importer Studio v2:</p><div class="tablewrap"><table class="table"><tbody><tr><th>Kolom</th><th>Fungsi</th></tr><tr><td><span class="code">_model</span></td><td>Model teknis, misalnya project.task.</td></tr><tr><td><span class="code">__action</span></td><td>upsert, create, update, skip. Delete diblokir default.</td></tr><tr><td><span class="code">_external_id</span></td><td>ID stabil agar import ulang tidak membuat duplikat.</td></tr><tr><td><span class="code">field_external_id</span></td><td>Many2one berdasarkan external ID.</td></tr><tr><td><span class="code">field_external_ids</span></td><td>Many2many, dipisah koma/titik koma.</td></tr><tr><td><span class="code">x_*</span></td><td>Custom field Odoo Online.</td></tr></tbody></table></div></div>
+    <div class="card"><h2>Aturan Lokalmart</h2><p class="hint">Untuk project/task: gunakan external ID konservatif, jangan mengganti task lama tanpa kebutuhan, parent/subtask harus jelas, dan Ground Zero dipakai sebagai pusat manajemen ide. Untuk Lokal ID dan Agen/Dropshipper, masukkan sebagai task governance/flow, bukan hanya ide lepas.</p><p class="hint">Untuk QWeb/website.page: pisahkan patch fragile dari data utama. Untuk Many2one custom di Odoo Online, buat field required=false dulu bila importer belum memastikan ondelete restrict/cascade.</p></div>
+  </div>`; }
+function renderLogs(){ const el=document.querySelector('[data-view="logs"]'); if(!el)return; el.innerHTML=`<div class="grid"><div class="section-title"><div><h2>Log & Audit Studio</h2><p>Semua aksi penting dicatat di browser agar error bisa disalin ke ChatGPT.</p></div><div class="pillrow"><button class="btn secondary" onclick="downloadText('lokalmart_studio_log.txt',state.logs.join('\n\n'))">Download Log</button><button class="btn bad" onclick="state.logs=[];renderLogs()">Bersihkan</button></div></div><div class="log">${escapeHtml(state.logs.join('\n\n')||'Belum ada log.')}</div></div>`; }
+
+function openSettings(){ fillSettingsForm(); renderTargetList(); $('settingsModal').classList.add('show'); }
+function closeSettings(){ $('settingsModal').classList.remove('show'); }
+function fillSettingsForm(){ const t=activeTarget()||{}; $('setName').value=t.name||''; $('setUrl').value=t.url||''; $('setDb').value=t.db||''; $('setUser').value=t.username||''; $('setPass').value=t.password||''; }
+function saveTarget(){ let t; try{ t=readSettingsTarget(); validateTarget(t); }catch(e){toast(e.message);return} const i=state.targets.findIndex(x=>x.id===t.id); if(i>=0)state.targets[i]=t; else state.targets.push(t); state.activeTargetId=t.id; persist(); updateTargetUI(); closeSettings(); toast('Target disimpan'); }
+function renderTargetList(){ const box=$('targetList'); if(!box)return; if(!state.targets.length){box.innerHTML='<p class="hint">Belum ada target.</p>';return} box.innerHTML=state.targets.map(t=>`<button class="feature" style="min-height:unset" onclick="state.activeTargetId='${t.id}';persist();updateTargetUI();fillSettingsForm()"><div><h3>${escapeHtml(t.name)}</h3><p>${escapeHtml(t.url)}<br>${escapeHtml(t.db)} · ${escapeHtml(t.username)}</p></div><span class="pill">${t.id===state.activeTargetId?'Aktif':'Pilih'}</span></button>`).join(''); }
+function deleteActiveTarget(){ if(!state.activeTargetId)return; state.targets=state.targets.filter(t=>t.id!==state.activeTargetId); state.activeTargetId=state.targets[0]?.id||null; persist(); updateTargetUI(); fillSettingsForm(); toast('Target dihapus'); }
+async function testConnection(){
+  try{
+    const modalOpen = $('settingsModal') && $('settingsModal').classList.contains('show');
+    const formHasValue = modalOpen && ($('setUrl').value || $('setDb').value || $('setUser').value || $('setPass').value);
+    const target = formHasValue ? readSettingsTarget() : requireTarget();
+    validateTarget(target);
+    const res = await api('test_connection', {}, { target });
+    log('Koneksi Odoo sukses', { target:{url:target.url, db:target.db, username:target.username}, result:res });
+    toast(formHasValue ? 'Koneksi sukses. Klik Simpan Target.' : 'Koneksi sukses');
+    if(!formHasValue) closeSettings();
+  }catch(e){
+    log('Koneksi Odoo gagal', { error:e.message });
+    toast(e.message);
+  }
+}
+
+function escapeHtml(v){ return String(v??'').replace(/[&<>'"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function short(v){ const s=Array.isArray(v)?v.join(', '):(typeof v==='object'&&v?safeJson(v):String(v??'')); return s.length>90?s.slice(0,90)+'…':s; }
+init();
+</script>
+</body>
+</html>
