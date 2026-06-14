@@ -1,905 +1,769 @@
-'use strict';
+/*
+  Lokalmart Studio v3 - single Vercel API
+  ------------------------------------------------------------
+  One file, one endpoint: /api/odoo
+  Frontend sends: { action, target, payload }
+
+  Target shape:
+  {
+    url: 'https://edu-lokalmart.odoo.com',
+    db: 'edu-lokalmart',
+    username: 'admin@example.com',
+    password: 'Odoo API key or local password'
+  }
+*/
 
 const XLSX = require('xlsx');
 
-const DEFAULT_MODELS = [
-  'project.project',
-  'project.task',
-  'project.milestone',
-  'project.update',
-  'knowledge.article',
-  'product.template',
-  'product.product',
-  'product.category',
-  'res.partner',
-  'sale.order',
-  'sale.order.line',
-  'account.move',
-  'stock.quant',
-  'website.page',
-  'ir.ui.view',
-  'ir.model',
-  'ir.model.fields',
-  'ir.model.data'
-];
+const MAX_BODY_BYTES = 18 * 1024 * 1024;
+const DEFAULT_MODULE = 'lokalmart_studio';
+const DEFAULT_LIMIT = 250;
 
-const SAFE_READ_METHODS = new Set(['search_read', 'search_count', 'read', 'fields_get', 'search']);
-const RESERVED_COLUMNS = new Set(['__action', '_action', '_external_id', 'external_id', '_model', '__model', '_id', 'id']);
-const MAX_BODY_SIZE = 35 * 1024 * 1024;
+module.exports = async function handler(req, res) {
+  applyCors(res);
+  if (req.method === 'OPTIONS') return json(res, 200, { ok: true });
+  if (req.method === 'GET') {
+    return json(res, 200, {
+      ok: true,
+      name: 'Lokalmart Studio v3 Vercel API',
+      endpoint: '/api/odoo',
+      usage: 'POST JSON { action, target, payload }',
+      actions: [
+        'health', 'test_connection', 'schema_scan', 'data_audit', 'context_export',
+        'xlsx_preview', 'import_xlsx', 'full_export',
+        'project_list', 'project_context_export', 'project_xlsx_export',
+        'barcode_lookup', 'read_records'
+      ]
+    });
+  }
+  if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Method tidak didukung.' });
 
-function sendJson(res, status, payload) {
+  try {
+    const body = await readJsonBody(req);
+    const action = String(body.action || '').trim();
+    const target = normalizeTarget(body.target || {});
+    const payload = body.payload || {};
+
+    if (!action) throw new UserError('Action kosong.');
+    if (action === 'health') return json(res, 200, { ok: true, time: new Date().toISOString() });
+
+    const requireTargetActions = new Set([
+      'test_connection', 'schema_scan', 'data_audit', 'context_export',
+      'xlsx_preview', 'import_xlsx', 'full_export', 'project_list',
+      'project_context_export', 'project_xlsx_export', 'barcode_lookup', 'read_records'
+    ]);
+    if (requireTargetActions.has(action)) validateTarget(target);
+
+    const ctx = createOdooClient(target);
+
+    if (action === 'test_connection') {
+      const session = await ctx.login();
+      const user = await ctx.execute('res.users', 'read', [[session.uid], ['id', 'name', 'login', 'company_id', 'groups_id']]);
+      return json(res, 200, {
+        ok: true,
+        uid: session.uid,
+        db: target.db,
+        username: target.username,
+        url: target.url,
+        user: Array.isArray(user) ? user[0] : user,
+        message: 'Koneksi Odoo berhasil.'
+      });
+    }
+
+    if (action === 'schema_scan') return json(res, 200, { ok: true, schema: await schemaScan(ctx, payload) });
+    if (action === 'data_audit') return json(res, 200, { ok: true, audit: await dataAudit(ctx, payload) });
+    if (action === 'context_export') return json(res, 200, { ok: true, context: await contextExport(ctx, payload) });
+    if (action === 'xlsx_preview') return json(res, 200, { ok: true, preview: xlsxPreview(payload) });
+    if (action === 'import_xlsx') return json(res, 200, { ok: true, result: await importXlsx(ctx, payload) });
+    if (action === 'full_export') return json(res, 200, { ok: true, export: await fullExport(ctx, payload) });
+    if (action === 'project_list') return json(res, 200, { ok: true, projects: await projectList(ctx, payload) });
+    if (action === 'project_context_export') return json(res, 200, { ok: true, context: await projectContextExport(ctx, payload) });
+    if (action === 'project_xlsx_export') return json(res, 200, { ok: true, export: await projectXlsxExport(ctx, payload) });
+    if (action === 'barcode_lookup') return json(res, 200, { ok: true, result: await barcodeLookup(ctx, payload) });
+    if (action === 'read_records') return json(res, 200, { ok: true, result: await readRecords(ctx, payload) });
+
+    throw new UserError(`Action tidak dikenal: ${action}`);
+  } catch (err) {
+    const status = err instanceof UserError ? 400 : 500;
+    return json(res, status, {
+      ok: false,
+      error: err.message || String(err),
+      code: err.code || err.name || 'ERROR',
+      hint: err.hint || undefined,
+      details: err.details || undefined
+    });
+  }
+};
+
+class UserError extends Error {
+  constructor(message, hint, details) {
+    super(message);
+    this.name = 'UserError';
+    this.hint = hint;
+    this.details = details;
+  }
+}
+
+function applyCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
+
+function json(res, status, body) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(body));
 }
 
-function normalizeError(err) {
-  const message = err && err.message ? String(err.message) : String(err || 'Unknown error');
-  const detail = err && err.stack ? String(err.stack).slice(0, 8000) : undefined;
-  return { message, detail };
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    let total = 0;
+    req.on('data', chunk => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        reject(new UserError('Payload terlalu besar. Kurangi jumlah sheet/baris atau gunakan batch lebih kecil.'));
+        req.destroy();
+        return;
+      }
+      raw += chunk.toString('utf8');
+    });
+    req.on('end', () => {
+      try {
+        if (!raw.trim()) return resolve({});
+        resolve(JSON.parse(raw));
+      } catch (e) {
+        reject(new UserError('Body request bukan JSON valid.', 'Pastikan frontend mengirim Content-Type application/json.'));
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
-async function readJsonBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string' && req.body.trim()) return JSON.parse(req.body);
-
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of req) {
-    total += chunk.length;
-    if (total > MAX_BODY_SIZE) {
-      throw new Error('Payload terlalu besar. Kurangi batch atau file.');
-    }
-    chunks.push(chunk);
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    throw new Error('Body bukan JSON valid: ' + err.message);
-  }
-}
-
-function cleanUrl(url) {
-  const value = String(url || '').trim().replace(/\/+$/, '');
-  if (!value) throw new Error('URL Odoo belum diisi.');
-  if (!/^https?:\/\//i.test(value)) {
-    throw new Error('URL Odoo harus diawali http:// atau https://');
-  }
-  return value;
-}
-
-function assertTarget(target) {
-  const t = target || {};
-  const clean = {
-    url: cleanUrl(t.url || t.host),
-    db: String(t.db || t.database || '').trim(),
-    username: String(t.username || t.login || t.email || '').trim(),
-    password: String(t.password || t.apiKey || t.key || '').trim()
+function normalizeTarget(target) {
+  let url = String(target.url || '').trim();
+  url = url.replace(/\/+$/, '').replace(/\/web$/, '');
+  return {
+    url,
+    db: String(target.db || target.database || '').trim(),
+    username: String(target.username || target.email || target.login || '').trim(),
+    password: String(target.password || target.apiKey || target.api_key || '').trim()
   };
-  if (!clean.db) throw new Error('Database Odoo belum diisi.');
-  if (!clean.username) throw new Error('Username/email Odoo belum diisi.');
-  if (!clean.password) throw new Error('Password/API Key Odoo belum diisi.');
-  return clean;
 }
 
-function boolish(value) {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  const s = String(value || '').trim().toLowerCase();
-  if (['true', '1', 'yes', 'y', 'iya', 'ya', 'aktif', 'published'].includes(s)) return true;
-  if (['false', '0', 'no', 'n', 'tidak', 'nonaktif', 'draft'].includes(s)) return false;
-  return value;
+function validateTarget(target) {
+  if (!target.url || !/^https?:\/\//i.test(target.url)) throw new UserError('URL Odoo tidak valid.', 'Contoh: https://edu-lokalmart.odoo.com');
+  if (!target.db) throw new UserError('Database Odoo kosong.', 'Contoh: edu-lokalmart');
+  if (!target.username) throw new UserError('Username/email Odoo kosong.');
+  if (!target.password) throw new UserError('Password/API key kosong.', 'Untuk Odoo Online, gunakan API Key sebagai pengganti password.');
 }
 
-function isBlank(value) {
-  return value === null || value === undefined || String(value).trim() === '';
-}
+function createOdooClient(target) {
+  let uidCache = null;
+  let loginPromise = null;
 
-function asArray(value) {
-  if (Array.isArray(value)) return value;
-  if (isBlank(value)) return [];
-  return String(value).split(/[;,|]/).map(v => v.trim()).filter(Boolean);
-}
-
-function sanitizeExternalName(name) {
-  return String(name || '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/[^A-Za-z0-9_.-]/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 180) || ('x_' + Date.now());
-}
-
-function parseExternalId(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  const idx = raw.indexOf('.');
-  if (idx > 0) {
-    const module = sanitizeExternalName(raw.slice(0, idx));
-    const name = sanitizeExternalName(raw.slice(idx + 1));
-    return { module, name, complete: module + '.' + name };
-  }
-  return { module: '__import__', name: sanitizeExternalName(raw), complete: '__import__.' + sanitizeExternalName(raw) };
-}
-
-function stripHtml(html) {
-  return String(html || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+\n/g, '\n')
-    .replace(/\n\s+/g, '\n')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-}
-
-function flattenForSheet(obj, prefix = '', out = {}) {
-  if (obj === null || obj === undefined) {
-    out[prefix || 'value'] = '';
-    return out;
-  }
-  if (Array.isArray(obj)) {
-    if (obj.length && typeof obj[0] === 'object') out[prefix || 'items'] = JSON.stringify(obj);
-    else out[prefix || 'items'] = obj.join(', ');
-    return out;
-  }
-  if (typeof obj !== 'object') {
-    out[prefix || 'value'] = obj;
-    return out;
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    const key = prefix ? `${prefix}.${k}` : k;
-    if (v && typeof v === 'object') {
-      if (Array.isArray(v) || Object.keys(v).length > 8) out[key] = JSON.stringify(v);
-      else flattenForSheet(v, key, out);
-    } else {
-      out[key] = v;
+  async function jsonRpc(service, method, args) {
+    const id = Date.now() + Math.random();
+    const response = await fetch(`${target.url}/jsonrpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { service, method, args }, id })
+    });
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch (e) {
+      throw new UserError(`Odoo mengembalikan non-JSON HTTP ${response.status}.`, 'Cek URL Odoo. Jangan pakai /web di belakang URL.', text.slice(0, 1200));
     }
+    if (!response.ok) throw new UserError(`Odoo HTTP ${response.status}`, undefined, data);
+    if (data.error) {
+      const message = data.error?.data?.message || data.error?.message || 'Odoo JSON-RPC error';
+      const debug = data.error?.data?.debug || data.error;
+      throw new UserError(message, 'Cek permission user, model, field, dan format data.', debug);
+    }
+    return data.result;
+  }
+
+  async function login() {
+    if (uidCache) return { uid: uidCache };
+    if (!loginPromise) {
+      loginPromise = jsonRpc('common', 'login', [target.db, target.username, target.password])
+        .then(uid => {
+          if (!uid) {
+            throw new UserError(
+              `Login Odoo gagal untuk database "${target.db}" dan user "${target.username}".`,
+              'Gunakan API Key Odoo sebagai password. Pastikan database dan email user benar.'
+            );
+          }
+          uidCache = uid;
+          return { uid };
+        });
+    }
+    return loginPromise;
+  }
+
+  async function execute(model, method, args = [], kwargs = {}) {
+    const session = await login();
+    return jsonRpc('object', 'execute_kw', [target.db, session.uid, target.password, model, method, args, kwargs]);
+  }
+
+  return { target, login, execute };
+}
+
+async function safeExecute(ctx, model, method, args = [], kwargs = {}, fallback = null) {
+  try { return await ctx.execute(model, method, args, kwargs); }
+  catch (e) { return fallback; }
+}
+
+async function modelExists(ctx, model) {
+  const ids = await safeExecute(ctx, 'ir.model', 'search', [[[ 'model', '=', model ]]], { limit: 1 }, []);
+  return Array.isArray(ids) && ids.length > 0;
+}
+
+async function fieldsGet(ctx, model) {
+  return await ctx.execute(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'required', 'readonly'] });
+}
+
+function parseCsvList(value, fallback = []) {
+  if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
+  if (!value) return fallback;
+  return String(value).split(/[\n,]+/).map(v => v.trim()).filter(Boolean);
+}
+
+function normalizeLimit(value, fallback = DEFAULT_LIMIT, max = 2000) {
+  const n = Number(value || fallback);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.floor(n), max);
+}
+
+async function schemaScan(ctx, payload = {}) {
+  const defaultModels = [
+    'project.project', 'project.task', 'project.milestone', 'project.update',
+    'knowledge.article', 'product.template', 'product.product', 'product.category',
+    'res.partner', 'sale.order', 'sale.order.line', 'ir.model', 'ir.model.fields'
+  ];
+  const models = parseCsvList(payload.models, defaultModels);
+  const out = [];
+  for (const model of models) {
+    const exists = await modelExists(ctx, model);
+    if (!exists) {
+      out.push({ model, exists: false, fields: [], warning: 'Model tidak ditemukan atau tidak bisa diakses.' });
+      continue;
+    }
+    const fg = await fieldsGet(ctx, model);
+    const fields = Object.entries(fg).map(([name, meta]) => ({ name, ...meta })).sort((a, b) => a.name.localeCompare(b.name));
+    out.push({ model, exists: true, field_count: fields.length, fields });
+  }
+  const customModels = await safeExecute(ctx, 'ir.model', 'search_read', [[[ 'model', 'like', 'x_' ]]], { fields: ['id', 'name', 'model', 'state'], limit: 200 }, []);
+  return { scanned_at: new Date().toISOString(), models: out, custom_models: customModels };
+}
+
+async function dataAudit(ctx, payload = {}) {
+  const models = parseCsvList(payload.models, [
+    'project.project', 'project.task', 'project.milestone', 'project.update',
+    'knowledge.article', 'product.template', 'product.product', 'res.partner',
+    'sale.order', 'sale.order.line', 'ir.model.fields', 'ir.ui.view'
+  ]);
+  const counts = [];
+  for (const model of models) {
+    if (!(await modelExists(ctx, model))) {
+      counts.push({ model, exists: false, count: null });
+      continue;
+    }
+    const count = await safeExecute(ctx, model, 'search_count', [[]], {}, null);
+    counts.push({ model, exists: true, count });
+  }
+
+  const taskFields = await safeExecute(ctx, 'project.task', 'fields_get', [], { attributes: ['type', 'relation'] }, {});
+  const hasParent = !!taskFields?.parent_id;
+  const orphanDomain = hasParent ? [[['project_id', '!=', false], ['parent_id', '=', false]]] : [[['project_id', '!=', false]]];
+  const topTasks = await safeExecute(ctx, 'project.task', 'search_read', orphanDomain, {
+    fields: ['id', 'name', 'project_id', 'stage_id', 'parent_id'],
+    limit: 100,
+    order: 'project_id,name'
+  }, []);
+
+  return {
+    audited_at: new Date().toISOString(),
+    counts,
+    task_parent_field_exists: hasParent,
+    top_level_tasks_sample: topTasks,
+    notes: [
+      'Top-level task bukan selalu error; tetapi untuk Ground Zero user biasanya ingin semua ide punya parent hierarki.',
+      'Gunakan Project Export untuk membaca konteks satu project secara mendalam.'
+    ]
+  };
+}
+
+async function contextExport(ctx, payload = {}) {
+  const limit = normalizeLimit(payload.limit, 80, 500);
+  const models = parseCsvList(payload.models, ['project.project', 'project.task', 'knowledge.article', 'product.template', 'res.partner']);
+  const schema = await schemaScan(ctx, { models });
+  const samples = {};
+  for (const model of models) {
+    if (!(await modelExists(ctx, model))) {
+      samples[model] = { exists: false, records: [] };
+      continue;
+    }
+    const fields = await defaultReadableFields(ctx, model);
+    const records = await safeExecute(ctx, model, 'search_read', [[]], { fields, limit, order: 'write_date desc' }, []);
+    samples[model] = { exists: true, fields, records };
+  }
+  return {
+    kind: 'lokalmart_studio_context',
+    generated_at: new Date().toISOString(),
+    target: { url: ctx.target.url, db: ctx.target.db, username: ctx.target.username },
+    instruction_for_chatgpt: 'Baca konteks Odoo Lokalmart ini. Identifikasi struktur terakhir, gap, orphan task, relasi yang kurang, lalu buat rekomendasi dan XLSX patch import-safe jika diminta.',
+    schema,
+    samples
+  };
+}
+
+async function defaultReadableFields(ctx, model) {
+  const fg = await fieldsGet(ctx, model);
+  const preferred = ['id', 'display_name', 'name', 'active', 'sequence', 'create_date', 'write_date', 'user_id', 'project_id', 'parent_id', 'stage_id', 'partner_id', 'company_id', 'description', 'date_start', 'date_end', 'deadline', 'barcode', 'list_price', 'standard_price', 'categ_id', 'type', 'model', 'state'];
+  const fields = preferred.filter(f => fg[f]);
+  Object.keys(fg).filter(f => f.startsWith('x_')).slice(0, 25).forEach(f => fields.push(f));
+  return [...new Set(fields)].slice(0, 80);
+}
+
+function workbookFromBase64(payload) {
+  const b64 = payload.file_base64 || payload.base64 || '';
+  if (!b64) throw new UserError('File XLSX kosong.');
+  const clean = String(b64).includes(',') ? String(b64).split(',').pop() : String(b64);
+  const buf = Buffer.from(clean, 'base64');
+  return XLSX.read(buf, { type: 'buffer', cellDates: true });
+}
+
+function sheetToRows(workbook, sheetName) {
+  const sheet = workbook.Sheets[sheetName];
+  return XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+}
+
+function xlsxPreview(payload = {}) {
+  const workbook = workbookFromBase64(payload);
+  const sheets = workbook.SheetNames.map(name => {
+    const rows = sheetToRows(workbook, name);
+    const columns = rows.length ? Object.keys(rows[0]) : [];
+    const models = [...new Set(rows.map(r => String(r._model || '').trim()).filter(Boolean))];
+    return {
+      sheet: name,
+      rows: rows.length,
+      columns,
+      models,
+      sample: rows.slice(0, 3)
+    };
+  });
+  return { file: payload.file_name || payload.filename || 'upload.xlsx', sheets };
+}
+
+async function importXlsx(ctx, payload = {}) {
+  const workbook = workbookFromBase64(payload);
+  const options = payload.options || {};
+  const maxRows = normalizeLimit(options.max_rows || payload.max_rows, 2000, 10000);
+  const continueOnError = options.continue_on_error !== false;
+  const onlySheets = parseCsvList(options.sheets || payload.sheets, []);
+  const result = { started_at: new Date().toISOString(), processed: 0, created: 0, updated: 0, skipped: 0, errors: [], warnings: [], sheets: [] };
+
+  for (const sheetName of workbook.SheetNames) {
+    if (onlySheets.length && !onlySheets.includes(sheetName)) continue;
+    const rows = sheetToRows(workbook, sheetName);
+    const sheetResult = { sheet: sheetName, processed: 0, created: 0, updated: 0, skipped: 0, errors: [] };
+    for (let i = 0; i < rows.length && result.processed < maxRows; i++) {
+      const rowNumber = i + 2;
+      const row = rows[i];
+      try {
+        const one = await importOneRow(ctx, row, sheetName);
+        sheetResult.processed++;
+        result.processed++;
+        if (one.status === 'created') { sheetResult.created++; result.created++; }
+        else if (one.status === 'updated') { sheetResult.updated++; result.updated++; }
+        else { sheetResult.skipped++; result.skipped++; }
+      } catch (e) {
+        const msg = `${sheetName} row ${rowNumber}: ${e.message}`;
+        sheetResult.errors.push(msg);
+        result.errors.push(msg);
+        if (!continueOnError) throw e;
+      }
+    }
+    result.sheets.push(sheetResult);
+  }
+  result.finished_at = new Date().toISOString();
+  return result;
+}
+
+async function importOneRow(ctx, row, sheetName) {
+  const clean = cleanRow(row);
+  const model = String(clean._model || guessModelFromSheet(sheetName) || '').trim();
+  const action = String(clean.__action || clean.action || 'upsert').trim().toLowerCase();
+  const externalId = String(clean._external_id || clean.external_id || '').trim();
+  if (!model) throw new UserError('Model kosong. Isi _model di sheet atau pakai nama sheet sebagai model.');
+  if (action === 'skip' || action === 'noop') return { status: 'skipped' };
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+
+  const fieldsMeta = await fieldsGet(ctx, model);
+  let existingId = null;
+  if (externalId) existingId = await resolveExternalId(ctx, externalId, model);
+  if (!existingId && clean.id && ['update', 'upsert', 'delete', 'archive'].includes(action)) existingId = Number(clean.id);
+
+  if (action === 'delete') {
+    if (!existingId) return { status: 'skipped' };
+    await ctx.execute(model, 'unlink', [[existingId]]);
+    return { status: 'deleted', id: existingId };
+  }
+
+  if (action === 'archive') {
+    if (!existingId) return { status: 'skipped' };
+    if (!fieldsMeta.active) throw new UserError(`Model ${model} tidak punya field active untuk archive.`);
+    await ctx.execute(model, 'write', [[existingId], { active: false }]);
+    return { status: 'archived', id: existingId };
+  }
+
+  const vals = await rowToVals(ctx, clean, model, fieldsMeta);
+  if (Object.keys(vals).length === 0) return { status: 'skipped' };
+
+  if (existingId) {
+    await ctx.execute(model, 'write', [[existingId], vals]);
+    return { status: 'updated', id: existingId };
+  }
+
+  if (action === 'update') throw new UserError(`Record untuk update tidak ditemukan: ${externalId || clean.id || '(tanpa id)'}`);
+  const newId = await ctx.execute(model, 'create', [vals]);
+  if (externalId) await createExternalId(ctx, externalId, model, newId);
+  return { status: 'created', id: newId };
+}
+
+function cleanRow(row) {
+  const out = {};
+  for (const [k, v] of Object.entries(row || {})) {
+    const key = String(k || '').trim();
+    if (!key) continue;
+    out[key] = typeof v === 'string' ? v.trim() : v;
   }
   return out;
 }
 
-function pickFields(fieldsMap, wanted) {
-  return wanted.filter(f => fieldsMap && Object.prototype.hasOwnProperty.call(fieldsMap, f));
+function guessModelFromSheet(sheetName) {
+  const name = String(sheetName || '').trim();
+  if (name.includes('.')) return name;
+  return '';
 }
 
-function workbookResponse(workbook, filename) {
-  const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
-  return {
-    filename,
-    fileName: filename,
-    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    base64: buffer.toString('base64')
-  };
-}
+async function rowToVals(ctx, row, model, fieldsMeta) {
+  const vals = {};
+  const handled = new Set();
 
-function addSheet(workbook, name, rows) {
-  const safeName = String(name || 'Sheet').replace(/[\\/?*\[\]:]/g, ' ').slice(0, 31) || 'Sheet';
-  const ws = XLSX.utils.json_to_sheet(rows && rows.length ? rows : [{ note: 'Tidak ada data' }]);
-  XLSX.utils.book_append_sheet(workbook, ws, safeName);
-}
-
-class OdooJsonRpc {
-  constructor(target) {
-    this.target = assertTarget(target);
-    this.uid = null;
-    this.fieldCache = new Map();
-    this.modelOkCache = new Map();
-  }
-
-  async rpc(service, method, args) {
-    const body = {
-      jsonrpc: '2.0',
-      method: 'call',
-      params: { service, method, args },
-      id: Date.now() + Math.floor(Math.random() * 100000)
-    };
-    const response = await fetch(this.target.url + '/jsonrpc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const text = await response.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch (_) {
-      throw new Error(`Odoo mengembalikan non-JSON HTTP ${response.status}: ${text.slice(0, 600)}`);
+  for (const [key, value] of Object.entries(row)) {
+    if (key.endsWith('_external_id') && key !== '_external_id') {
+      const field = key.slice(0, -'_external_id'.length);
+      if (!fieldsMeta[field]) continue;
+      if (isBlank(value)) continue;
+      const id = await resolveExternalId(ctx, String(value).trim(), fieldsMeta[field].relation || null);
+      if (!id) throw new UserError(`External ID tidak ditemukan untuk ${key}: ${value}`);
+      vals[field] = id;
+      handled.add(key);
+      handled.add(field);
     }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${JSON.stringify(json).slice(0, 1200)}`);
-    }
-    if (json.error) {
-      const data = json.error.data || {};
-      const msg = data.message || json.error.message || JSON.stringify(json.error);
-      const debug = data.debug ? '\n' + String(data.debug).slice(0, 1800) : '';
-      throw new Error(msg + debug);
-    }
-    return json.result;
-  }
-
-  async authenticate() {
-    if (!this.target.db || !this.target.username || !this.target.password) {
-      throw new Error('Database, username, dan password/API key harus diisi.');
-    }
-    const uid = await this.rpc('common', 'authenticate', [
-      this.target.db,
-      this.target.username,
-      this.target.password,
-      {}
-    ]);
-    if (!uid) {
-      throw new Error(
-        `Login Odoo gagal untuk database "${this.target.db}" dengan user "${this.target.username}". ` +
-        'Periksa database, username, dan password/API key. Untuk Odoo Online, gunakan API Key sebagai pengganti password login web.'
-      );
-    }
-    this.uid = uid;
-    return uid;
-  }
-
-  async version() {
-    return this.rpc('common', 'version', []);
-  }
-
-  async executeKw(model, method, args = [], kwargs = {}) {
-    if (!this.uid) await this.authenticate();
-    return this.rpc('object', 'execute_kw', [
-      this.target.db,
-      this.uid,
-      this.target.password,
-      model,
-      method,
-      args,
-      kwargs || {}
-    ]);
-  }
-
-  async fieldsGet(model) {
-    if (this.fieldCache.has(model)) return this.fieldCache.get(model);
-    const fields = await this.executeKw(model, 'fields_get', [], {
-      attributes: ['string', 'type', 'relation', 'required', 'readonly', 'selection']
-    });
-    this.fieldCache.set(model, fields || {});
-    return fields || {};
-  }
-
-  async hasModel(model) {
-    if (this.modelOkCache.has(model)) return this.modelOkCache.get(model);
-    try {
-      await this.executeKw(model, 'search_count', [[]], {});
-      this.modelOkCache.set(model, true);
-      return true;
-    } catch (_) {
-      this.modelOkCache.set(model, false);
-      return false;
-    }
-  }
-
-  async searchRead(model, domain = [], fields = [], limit = 80, order = 'id desc') {
-    const kwargs = { fields, limit };
-    if (order) kwargs.order = order;
-    return this.executeKw(model, 'search_read', [domain], kwargs);
-  }
-
-  async search(model, domain = [], limit = 0, order = '') {
-    const kwargs = {};
-    if (limit) kwargs.limit = limit;
-    if (order) kwargs.order = order;
-    return this.executeKw(model, 'search', [domain], kwargs);
-  }
-
-  async count(model, domain = []) {
-    return this.executeKw(model, 'search_count', [domain], {});
-  }
-
-  async read(model, ids, fields = []) {
-    if (!ids || !ids.length) return [];
-    const kwargs = fields && fields.length ? { fields } : {};
-    return this.executeKw(model, 'read', [ids], kwargs);
-  }
-}
-
-async function findExternal(odoo, externalId) {
-  const parsed = parseExternalId(externalId);
-  if (!parsed) return null;
-  const rows = await odoo.searchRead(
-    'ir.model.data',
-    [['module', '=', parsed.module], ['name', '=', parsed.name]],
-    ['module', 'name', 'model', 'res_id'],
-    1,
-    'id desc'
-  );
-  return rows && rows[0] ? rows[0] : null;
-}
-
-async function bindExternal(odoo, externalId, model, resId) {
-  const parsed = parseExternalId(externalId);
-  if (!parsed || !model || !resId) return null;
-  const existing = await findExternal(odoo, externalId);
-  if (existing) return existing;
-  try {
-    const id = await odoo.executeKw('ir.model.data', 'create', [{
-      module: parsed.module,
-      name: parsed.name,
-      model,
-      res_id: resId,
-      noupdate: true
-    }], {});
-    return { id, module: parsed.module, name: parsed.name, model, res_id: resId };
-  } catch (err) {
-    return { warning: 'Gagal membuat external ID: ' + err.message };
-  }
-}
-
-async function resolveExternalIdToId(odoo, externalId, expectedModel) {
-  if (isBlank(externalId)) return false;
-  const row = await findExternal(odoo, externalId);
-  if (!row) throw new Error(`External ID tidak ditemukan: ${externalId}`);
-  if (expectedModel && row.model && row.model !== expectedModel) {
-    throw new Error(`External ID ${externalId} mengarah ke ${row.model}, bukan ${expectedModel}`);
-  }
-  return row.res_id;
-}
-
-async function prepareValues(odoo, model, row, fieldsMap) {
-  const values = {};
-  const warnings = [];
-  for (const [rawKey, rawValue] of Object.entries(row || {})) {
-    const key = String(rawKey || '').trim();
-    if (!key || RESERVED_COLUMNS.has(key)) continue;
-    if (key.startsWith('__')) continue;
-    if (isBlank(rawValue)) continue;
-
-    if (key.endsWith('_external_id')) {
-      const base = key.replace(/_external_id$/, '');
-      if (!fieldsMap[base]) {
-        warnings.push(`Kolom ${key} dilewati: field ${base} tidak ada di ${model}.`);
-        continue;
-      }
-      const field = fieldsMap[base];
-      const id = await resolveExternalIdToId(odoo, rawValue, field.relation);
-      values[base] = id;
-      continue;
-    }
-
     if (key.endsWith('_external_ids')) {
-      const base = key.replace(/_external_ids$/, '');
-      if (!fieldsMap[base]) {
-        warnings.push(`Kolom ${key} dilewati: field ${base} tidak ada di ${model}.`);
-        continue;
-      }
-      const field = fieldsMap[base];
+      const field = key.slice(0, -'_external_ids'.length);
+      if (!fieldsMeta[field]) continue;
       const ids = [];
-      for (const ext of asArray(rawValue)) {
-        ids.push(await resolveExternalIdToId(odoo, ext, field.relation));
+      for (const xmlid of parseCsvList(value, [])) {
+        const id = await resolveExternalId(ctx, xmlid, fieldsMeta[field].relation || null);
+        if (!id) throw new UserError(`External ID tidak ditemukan untuk ${key}: ${xmlid}`);
+        ids.push(id);
       }
-      if (field.type === 'many2many') values[base] = [[6, 0, ids]];
-      else values[base] = ids;
-      continue;
-    }
-
-    if (!fieldsMap[key]) {
-      warnings.push(`Kolom ${key} dilewati: field tidak ada di ${model}.`);
-      continue;
-    }
-    const field = fieldsMap[key];
-    if (field.readonly && !['ir.ui.view', 'website.page'].includes(model)) {
-      warnings.push(`Kolom ${key} dilewati: readonly.`);
-      continue;
-    }
-
-    let value = rawValue;
-    if (field.type === 'boolean') value = boolish(rawValue);
-    else if (['float', 'monetary'].includes(field.type)) value = Number(rawValue);
-    else if (field.type === 'integer') value = parseInt(rawValue, 10);
-    else if (field.type === 'many2one') {
-      if (typeof rawValue === 'number') value = rawValue;
-      else if (/^\d+$/.test(String(rawValue))) value = parseInt(rawValue, 10);
-      else warnings.push(`Kolom ${key}: many2one sebaiknya memakai ${key}_external_id. Nilai dibiarkan apa adanya.`);
-    } else if (field.type === 'many2many') {
-      value = [[6, 0, asArray(rawValue).map(v => parseInt(v, 10)).filter(Number.isFinite)]];
-    }
-    values[key] = value;
-  }
-  return { values, warnings };
-}
-
-async function importRows(odoo, payload) {
-  const rows = Array.isArray(payload.rows) ? payload.rows : [];
-  const fallbackModel = payload.model || '';
-  const allowDelete = !!payload.allowDelete;
-  const report = { processed: 0, created: 0, updated: 0, deleted: 0, skipped: 0, errors: [], warnings: [], rows: [] };
-  const fieldsByModel = new Map();
-
-  for (let i = 0; i < rows.length; i++) {
-    const rowNumber = Number(payload.offset || 0) + i + 2;
-    const row = rows[i] || {};
-    const model = String(row._model || row.__model || fallbackModel || '').trim();
-    const action = String(row.__action || row._action || 'upsert').trim().toLowerCase();
-    const externalId = row._external_id || row.external_id || '';
-    report.processed += 1;
-
-    try {
-      if (!model) throw new Error('Model kosong. Isi _model di sheet atau pilih model target.');
-      if (!(await odoo.hasModel(model))) throw new Error(`Model tidak tersedia / tidak bisa diakses: ${model}`);
-      if (!fieldsByModel.has(model)) fieldsByModel.set(model, await odoo.fieldsGet(model));
-      const fieldsMap = fieldsByModel.get(model);
-
-      let existing = null;
-      if (!isBlank(externalId)) existing = await findExternal(odoo, externalId);
-      if (!existing && row.id && /^\d+$/.test(String(row.id))) existing = { model, res_id: parseInt(row.id, 10) };
-
-      if (action === 'skip') {
-        report.skipped += 1;
-        report.rows.push({ row: rowNumber, status: 'skipped', model });
-        continue;
-      }
-
-      if (['delete', 'unlink'].includes(action)) {
-        if (!allowDelete) throw new Error('Delete/unlink diblokir. Aktifkan allowDelete bila benar-benar perlu.');
-        if (!existing) throw new Error('Record delete tidak ditemukan.');
-        await odoo.executeKw(model, 'unlink', [[existing.res_id]], {});
-        report.deleted += 1;
-        report.rows.push({ row: rowNumber, status: 'deleted', model, id: existing.res_id });
-        continue;
-      }
-
-      const prepared = await prepareValues(odoo, model, row, fieldsMap);
-      report.warnings.push(...prepared.warnings.map(w => `row ${rowNumber}: ${w}`));
-      if (!Object.keys(prepared.values).length) {
-        report.skipped += 1;
-        report.rows.push({ row: rowNumber, status: 'skipped-empty', model });
-        continue;
-      }
-
-      if (existing && existing.res_id) {
-        await odoo.executeKw(model, 'write', [[existing.res_id], prepared.values], {});
-        report.updated += 1;
-        report.rows.push({ row: rowNumber, status: 'updated', model, id: existing.res_id });
-      } else {
-        const id = await odoo.executeKw(model, 'create', [prepared.values], {});
-        if (!isBlank(externalId)) await bindExternal(odoo, externalId, model, id);
-        report.created += 1;
-        report.rows.push({ row: rowNumber, status: 'created', model, id });
-      }
-    } catch (err) {
-      report.errors.push(`row ${rowNumber}: ${err.message}`);
-      report.rows.push({ row: rowNumber, status: 'error', model, error: err.message });
-      if (payload.stopOnError) break;
+      vals[field] = [[6, 0, ids]];
+      handled.add(key);
+      handled.add(field);
     }
   }
-  return report;
+
+  if (row.image_url && fieldsMeta.image_1920) {
+    const image = await fetchImageAsBase64(row.image_url);
+    if (image) vals.image_1920 = image;
+    handled.add('image_url');
+  }
+
+  for (const [key, value] of Object.entries(row)) {
+    if (handled.has(key)) continue;
+    if (key.startsWith('_') || key === '__action' || key === 'action' || key === 'external_id' || key === 'id') continue;
+    if (key.endsWith('_external_id') || key.endsWith('_external_ids')) continue;
+    if (key === 'image_url') continue;
+    const meta = fieldsMeta[key];
+    if (!meta) continue;
+    if (meta.readonly && !meta.required) continue;
+    if (isBlank(value)) continue;
+    vals[key] = castValue(value, meta.type);
+  }
+  return vals;
 }
 
-async function testConnection(odoo) {
-  const [uid, version] = await Promise.all([odoo.authenticate(), odoo.version()]);
-  return {
-    ok: true,
-    uid,
-    db: odoo.target.db,
-    username: odoo.target.username,
-    server_version: version && (version.server_version || version.server_serie),
-    version
-  };
+function isBlank(value) {
+  return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
 }
 
-async function schemaScan(odoo, payload = {}) {
-  const models = Array.isArray(payload.models) && payload.models.length ? payload.models : DEFAULT_MODELS;
-  const result = { generated_at: new Date().toISOString(), models: [] };
+function castValue(value, type) {
+  if (type === 'boolean') {
+    const s = String(value).toLowerCase().trim();
+    return ['1', 'true', 'yes', 'y', 'ya', 'iya', 'aktif'].includes(s);
+  }
+  if (type === 'integer') return Number.parseInt(value, 10) || 0;
+  if (type === 'float' || type === 'monetary') return Number.parseFloat(String(value).replace(',', '.')) || 0;
+  if (type === 'date' || type === 'datetime') return String(value).trim();
+  return value;
+}
+
+function splitXmlId(xmlid) {
+  const raw = String(xmlid || '').trim();
+  if (!raw) return null;
+  if (raw.includes('.')) {
+    const [module, ...rest] = raw.split('.');
+    return { module: safeXmlPart(module), name: safeXmlPart(rest.join('.')) };
+  }
+  return { module: DEFAULT_MODULE, name: safeXmlPart(raw) };
+}
+
+function safeXmlPart(value) {
+  return String(value || '').trim().replace(/[^a-zA-Z0-9_\-.]/g, '_').replace(/\.+/g, '_');
+}
+
+async function resolveExternalId(ctx, xmlid, expectedModel = null) {
+  const parts = splitXmlId(xmlid);
+  if (!parts) return null;
+  const rows = await ctx.execute('ir.model.data', 'search_read', [[[ 'module', '=', parts.module ], [ 'name', '=', parts.name ]]], { fields: ['id', 'model', 'res_id'], limit: 1 });
+  if (!rows.length) return null;
+  if (expectedModel && rows[0].model !== expectedModel) return null;
+  return rows[0].res_id;
+}
+
+async function createExternalId(ctx, xmlid, model, resId) {
+  const parts = splitXmlId(xmlid);
+  if (!parts) return null;
+  const existing = await resolveExternalId(ctx, xmlid, model);
+  if (existing) return existing;
+  return ctx.execute('ir.model.data', 'create', [{ module: parts.module, name: parts.name, model, res_id: resId, noupdate: true }]);
+}
+
+async function fetchImageAsBase64(url) {
+  try {
+    const response = await fetch(String(url), { redirect: 'follow' });
+    if (!response.ok) return null;
+    const ab = await response.arrayBuffer();
+    if (ab.byteLength > 5 * 1024 * 1024) return null;
+    return Buffer.from(ab).toString('base64');
+  } catch (e) { return null; }
+}
+
+async function fullExport(ctx, payload = {}) {
+  const models = parseCsvList(payload.models, ['project.project', 'project.task', 'knowledge.article', 'product.template']);
+  const limit = normalizeLimit(payload.limit, 500, 5000);
+  const format = String(payload.format || 'json').toLowerCase();
+  const result = { generated_at: new Date().toISOString(), target: { url: ctx.target.url, db: ctx.target.db }, models: {} };
   for (const model of models) {
-    try {
-      if (!(await odoo.hasModel(model))) {
-        result.models.push({ model, available: false, error: 'Tidak tersedia / tidak bisa diakses' });
-        continue;
-      }
-      const fields = await odoo.fieldsGet(model);
-      const count = await odoo.count(model, []);
-      const fieldRows = Object.entries(fields).map(([name, f]) => ({
-        name,
-        label: f.string || name,
-        type: f.type,
-        relation: f.relation || '',
-        required: !!f.required,
-        readonly: !!f.readonly
-      })).sort((a, b) => a.name.localeCompare(b.name));
-      result.models.push({ model, available: true, count, fields: fieldRows, field_count: fieldRows.length });
-    } catch (err) {
-      result.models.push({ model, available: false, error: err.message });
+    if (!(await modelExists(ctx, model))) {
+      result.models[model] = { exists: false, records: [] };
+      continue;
     }
+    const fields = payload.fields ? parseCsvList(payload.fields, []) : await defaultReadableFields(ctx, model);
+    const records = await ctx.execute(model, 'search_read', [[]], { fields, limit, order: 'write_date desc' });
+    result.models[model] = { exists: true, fields, records };
+  }
+  if (format === 'xlsx') {
+    return { file_name: `lokalmart_full_export_${dateStamp()}.xlsx`, mime: XLSX_MIME, base64: objectToWorkbookBase64(result.models) };
   }
   return result;
 }
 
-async function dataAudit(odoo, payload = {}) {
-  const scan = await schemaScan(odoo, payload);
-  const audit = {
-    generated_at: scan.generated_at,
-    counts: {},
-    warnings: [],
-    models: scan.models.map(m => ({ model: m.model, available: m.available, count: m.count || 0, field_count: m.field_count || 0, error: m.error || '' }))
-  };
-  for (const m of scan.models) {
-    if (m.available) audit.counts[m.model] = m.count || 0;
-    else audit.warnings.push(`${m.model}: ${m.error || 'tidak tersedia'}`);
-  }
-
-  try {
-    if (await odoo.hasModel('project.task')) {
-      const fields = await odoo.fieldsGet('project.task');
-      if (fields.parent_id && fields.project_id) {
-        audit.project_task_without_project = await odoo.count('project.task', [['project_id', '=', false]]);
-      }
-    }
-  } catch (err) {
-    audit.warnings.push('Audit task gagal: ' + err.message);
-  }
-  return audit;
+async function projectList(ctx, payload = {}) {
+  const limit = normalizeLimit(payload.limit, 200, 1000);
+  const domain = [];
+  if (payload.search) domain.push(['name', 'ilike', String(payload.search)]);
+  return await ctx.execute('project.project', 'search_read', [domain], {
+    fields: ['id', 'name', 'display_name', 'active', 'user_id', 'partner_id', 'company_id', 'create_date', 'write_date'],
+    limit,
+    order: 'write_date desc'
+  });
 }
 
-async function contextExport(odoo, payload = {}) {
-  const models = Array.isArray(payload.models) && payload.models.length ? payload.models : DEFAULT_MODELS;
-  const limit = Math.min(Number(payload.limit || 25), 100);
-  const out = {
-    type: 'lokalmart_studio_context_export',
+async function projectContextExport(ctx, payload = {}) {
+  const projectId = Number(payload.project_id || payload.id || 0);
+  if (!projectId) throw new UserError('project_id kosong. Pilih project dulu.');
+  const projectFields = await safeFields(ctx, 'project.project', ['id', 'name', 'display_name', 'active', 'user_id', 'partner_id', 'company_id', 'create_date', 'write_date', 'description']);
+  const projectArr = await ctx.execute('project.project', 'read', [[projectId], projectFields]);
+  if (!projectArr.length) throw new UserError(`Project ID ${projectId} tidak ditemukan.`);
+  const project = projectArr[0];
+
+  const taskFields = await safeFields(ctx, 'project.task', ['id', 'name', 'display_name', 'active', 'project_id', 'parent_id', 'child_ids', 'stage_id', 'user_ids', 'partner_id', 'priority', 'sequence', 'date_deadline', 'create_date', 'write_date', 'description']);
+  const tasks = await ctx.execute('project.task', 'search_read', [[[ 'project_id', '=', projectId ]]], { fields: taskFields, limit: 3000, order: 'parent_id,sequence,id' });
+  const hierarchy = buildTaskHierarchy(tasks);
+
+  const milestones = await readIfModel(ctx, 'project.milestone', [[[ 'project_id', '=', projectId ]]], ['id', 'name', 'project_id', 'deadline', 'is_reached', 'create_date', 'write_date'], 1000);
+  const updates = await readIfModel(ctx, 'project.update', [[[ 'project_id', '=', projectId ]]], ['id', 'name', 'project_id', 'status', 'progress', 'description', 'create_date', 'write_date'], 500);
+  const messagesProject = await readIfModel(ctx, 'mail.message', [[[ 'model', '=', 'project.project' ], [ 'res_id', '=', projectId ]]], ['id', 'subject', 'body', 'date', 'author_id', 'message_type'], 200);
+  const taskIds = tasks.map(t => t.id);
+  const messagesTasks = taskIds.length ? await readIfModel(ctx, 'mail.message', [[[ 'model', '=', 'project.task' ], [ 'res_id', 'in', taskIds.slice(0, 800) ]]], ['id', 'subject', 'body', 'date', 'author_id', 'message_type', 'res_id'], 500) : [];
+  const xmlids = await exportXmlIds(ctx, ['project.project', 'project.task', 'project.milestone'], [projectId, ...taskIds, ...milestones.map(m => m.id)]);
+
+  const context = {
+    kind: 'lokalmart_project_context',
     generated_at: new Date().toISOString(),
-    target: { url: odoo.target.url, db: odoo.target.db, username: odoo.target.username },
-    models: []
+    target: { url: ctx.target.url, db: ctx.target.db, username: ctx.target.username },
+    project,
+    counts: { tasks: tasks.length, top_level_tasks: hierarchy.length, milestones: milestones.length, updates: updates.length, chatter_project: messagesProject.length, chatter_tasks: messagesTasks.length },
+    task_hierarchy: hierarchy,
+    tasks,
+    milestones,
+    updates,
+    chatter: { project: sanitizeMessages(messagesProject), tasks: sanitizeMessages(messagesTasks) },
+    external_ids: xmlids,
+    prompt_for_chatgpt: buildProjectPrompt(project, tasks, milestones, updates)
   };
-  for (const model of models) {
-    try {
-      if (!(await odoo.hasModel(model))) {
-        out.models.push({ model, available: false, error: 'Tidak tersedia / tidak bisa diakses' });
-        continue;
-      }
-      const fields = await odoo.fieldsGet(model);
-      const fieldNames = Object.keys(fields).slice(0, 80);
-      const sampleFields = pickFields(fields, ['id', 'name', 'display_name', 'active', 'create_date', 'write_date', 'parent_id', 'project_id', 'stage_id', 'user_ids', 'partner_id']);
-      const rows = await odoo.searchRead(model, [], sampleFields.length ? sampleFields : fieldNames.slice(0, 12), limit, 'id desc');
-      out.models.push({
-        model,
-        available: true,
-        count: await odoo.count(model, []),
-        fields: Object.entries(fields).map(([name, f]) => ({ name, label: f.string || name, type: f.type, relation: f.relation || '' })),
-        sample: rows
-      });
-    } catch (err) {
-      out.models.push({ model, available: false, error: err.message });
-    }
+  return context;
+}
+
+async function projectXlsxExport(ctx, payload = {}) {
+  const context = await projectContextExport(ctx, payload);
+  const sheets = {
+    project: [context.project],
+    tasks: context.tasks,
+    task_hierarchy: flattenHierarchy(context.task_hierarchy),
+    milestones: context.milestones,
+    updates: context.updates,
+    chatter_project: context.chatter.project,
+    chatter_tasks: context.chatter.tasks,
+    external_ids: context.external_ids,
+    prompt: [{ prompt: context.prompt_for_chatgpt }]
+  };
+  const name = sanitizeFilename(`project_${context.project.name || context.project.id}_${dateStamp()}.xlsx`);
+  return { file_name: name, mime: XLSX_MIME, base64: objectToWorkbookBase64(sheets) };
+}
+
+async function safeFields(ctx, model, wanted) {
+  const fg = await fieldsGet(ctx, model);
+  const fields = wanted.filter(f => fg[f]);
+  Object.keys(fg).filter(f => f.startsWith('x_')).slice(0, 30).forEach(f => fields.push(f));
+  return [...new Set(fields)];
+}
+
+async function readIfModel(ctx, model, domain, fields, limit = 500) {
+  if (!(await modelExists(ctx, model))) return [];
+  const safe = await safeFields(ctx, model, fields);
+  return await safeExecute(ctx, model, 'search_read', domain, { fields: safe, limit, order: 'write_date desc' }, []);
+}
+
+async function exportXmlIds(ctx, models, resIds) {
+  const ids = resIds.filter(Boolean);
+  if (!ids.length) return [];
+  return await safeExecute(ctx, 'ir.model.data', 'search_read', [[[ 'model', 'in', models ], [ 'res_id', 'in', ids ]]], { fields: ['module', 'name', 'model', 'res_id'], limit: 5000 }, []);
+}
+
+function buildTaskHierarchy(tasks) {
+  const byId = new Map();
+  for (const t of tasks) byId.set(t.id, { ...t, children: [] });
+  const roots = [];
+  for (const node of byId.values()) {
+    const parentId = Array.isArray(node.parent_id) ? node.parent_id[0] : node.parent_id;
+    if (parentId && byId.has(parentId)) byId.get(parentId).children.push(node);
+    else roots.push(node);
+  }
+  const sortTree = nodes => {
+    nodes.sort((a, b) => (Number(a.sequence || 0) - Number(b.sequence || 0)) || String(a.name || '').localeCompare(String(b.name || '')));
+    for (const n of nodes) sortTree(n.children || []);
+    return nodes;
+  };
+  return sortTree(roots);
+}
+
+function flattenHierarchy(nodes, level = 0, parent = '') {
+  const out = [];
+  for (const node of nodes || []) {
+    out.push({ level, parent, id: node.id, name: node.name, stage_id: pairName(node.stage_id), write_date: node.write_date });
+    out.push(...flattenHierarchy(node.children || [], level + 1, node.name));
   }
   return out;
 }
 
-async function contextWorkbook(context, filename) {
-  const wb = XLSX.utils.book_new();
-  addSheet(wb, 'summary', [{
-    type: context.type,
-    generated_at: context.generated_at,
-    db: context.target && context.target.db,
-    url: context.target && context.target.url,
-    models: context.models ? context.models.length : 0
-  }]);
-  for (const m of context.models || []) {
-    addSheet(wb, (m.model || 'model').replace(/\./g, '_').slice(0, 28), (m.sample || []).map(r => flattenForSheet(r)));
-  }
-  addSheet(wb, 'fields', (context.models || []).flatMap(m => (m.fields || []).map(f => ({ model: m.model, ...f }))));
-  return workbookResponse(wb, filename);
+function pairName(value) {
+  return Array.isArray(value) ? value[1] : value;
 }
 
-async function listProjects(odoo) {
-  const fieldsMap = await odoo.fieldsGet('project.project');
-  const fields = pickFields(fieldsMap, ['id', 'name', 'display_name', 'active', 'partner_id', 'user_id', 'date_start', 'date', 'stage_id', 'write_date', 'create_date']);
-  return {
-    projects: await odoo.searchRead('project.project', [], fields.length ? fields : ['id', 'name'], 200, 'write_date desc')
-  };
+function sanitizeMessages(messages) {
+  return (messages || []).map(m => ({ ...m, body: stripHtml(m.body || '').slice(0, 4000) }));
 }
 
-function m2oId(value) {
-  if (Array.isArray(value)) return value[0];
-  if (typeof value === 'number') return value;
-  if (/^\d+$/.test(String(value || ''))) return parseInt(value, 10);
-  return null;
+function stripHtml(html) {
+  return String(html || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function makeTaskTree(tasks) {
-  const byId = new Map();
-  const roots = [];
-  for (const task of tasks || []) {
-    byId.set(task.id, { ...task, children: [] });
-  }
-  for (const task of byId.values()) {
-    const pid = m2oId(task.parent_id);
-    if (pid && byId.has(pid)) byId.get(pid).children.push(task);
-    else roots.push(task);
-  }
-  return roots;
-}
-
-async function externalIdsFor(odoo, model, ids) {
-  if (!ids.length) return [];
-  try {
-    return await odoo.searchRead('ir.model.data', [['model', '=', model], ['res_id', 'in', ids]], ['module', 'name', 'model', 'res_id'], 1000, 'id asc');
-  } catch (_) {
-    return [];
-  }
-}
-
-async function projectContextExport(odoo, payload = {}) {
-  const projectId = Number(payload.projectId || payload.project_id || payload.id);
-  if (!projectId) throw new Error('Pilih project terlebih dahulu. projectId kosong.');
-
-  const projectFieldsMap = await odoo.fieldsGet('project.project');
-  const projectFields = pickFields(projectFieldsMap, [
-    'id', 'name', 'display_name', 'active', 'description', 'partner_id', 'user_id', 'stage_id',
-    'date_start', 'date', 'create_date', 'write_date', 'company_id', 'privacy_visibility'
-  ]);
-  const projectRows = await odoo.read('project.project', [projectId], projectFields.length ? projectFields : ['id', 'name']);
-  const project = projectRows[0];
-  if (!project) throw new Error('Project tidak ditemukan: ' + projectId);
-
-  const taskFieldsMap = await odoo.fieldsGet('project.task');
-  const taskFields = pickFields(taskFieldsMap, [
-    'id', 'name', 'display_name', 'active', 'project_id', 'parent_id', 'stage_id', 'milestone_id',
-    'user_ids', 'partner_id', 'priority', 'sequence', 'description', 'date_deadline', 'planned_date_begin',
-    'create_date', 'write_date', 'x_studio_chapter', 'x_lm_reason', 'x_lm_category', 'x_lm_priority'
-  ]);
-  const tasks = await odoo.searchRead('project.task', [['project_id', '=', projectId]], taskFields.length ? taskFields : ['id', 'name', 'parent_id', 'project_id'], 2000, 'sequence asc, id asc');
-
-  let milestones = [];
-  if (await odoo.hasModel('project.milestone')) {
-    const fields = await odoo.fieldsGet('project.milestone');
-    const mFields = pickFields(fields, ['id', 'name', 'project_id', 'deadline', 'is_reached', 'create_date', 'write_date']);
-    if (fields.project_id) {
-      milestones = await odoo.searchRead('project.milestone', [['project_id', '=', projectId]], mFields.length ? mFields : ['id', 'name'], 500, 'id asc');
-    }
-  }
-
-  let updates = [];
-  if (await odoo.hasModel('project.update')) {
-    const fields = await odoo.fieldsGet('project.update');
-    const uFields = pickFields(fields, ['id', 'name', 'project_id', 'description', 'status', 'progress', 'date', 'create_date', 'write_date']);
-    if (fields.project_id) {
-      updates = await odoo.searchRead('project.update', [['project_id', '=', projectId]], uFields.length ? uFields : ['id', 'name'], 200, 'id desc');
-      updates = updates.map(u => ({ ...u, description_text: stripHtml(u.description) }));
-    }
-  }
-
-  let messages = [];
-  if (await odoo.hasModel('mail.message')) {
-    const ids = tasks.map(t => t.id);
-    const domains = [['model', '=', 'project.project'], ['res_id', '=', projectId]];
-    try {
-      const projectMessages = await odoo.searchRead('mail.message', domains, ['id', 'subject', 'body', 'date', 'author_id', 'model', 'res_id'], 80, 'date desc');
-      let taskMessages = [];
-      if (ids.length) {
-        taskMessages = await odoo.searchRead('mail.message', [['model', '=', 'project.task'], ['res_id', 'in', ids.slice(0, 500)]], ['id', 'subject', 'body', 'date', 'author_id', 'model', 'res_id'], 160, 'date desc');
-      }
-      messages = [...projectMessages, ...taskMessages]
-        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-        .slice(0, 200)
-        .map(m => ({ ...m, body_text: stripHtml(m.body).slice(0, 2000) }));
-    } catch (err) {
-      messages = [{ error: 'Gagal membaca chatter: ' + err.message }];
-    }
-  }
-
-  const taskExternal = await externalIdsFor(odoo, 'project.task', tasks.map(t => t.id));
-  const projectExternal = await externalIdsFor(odoo, 'project.project', [projectId]);
-  const milestoneExternal = await externalIdsFor(odoo, 'project.milestone', milestones.map(m => m.id));
-
-  const context = {
-    type: 'lokalmart_project_context_export',
-    generated_at: new Date().toISOString(),
-    target: { url: odoo.target.url, db: odoo.target.db, username: odoo.target.username },
-    project,
-    counts: {
-      tasks: tasks.length,
-      root_tasks: tasks.filter(t => !m2oId(t.parent_id)).length,
-      milestones: milestones.length,
-      updates: updates.length,
-      messages: messages.length
-    },
-    tasks,
-    task_tree: makeTaskTree(tasks),
-    milestones,
-    updates,
-    messages,
-    external_ids: {
-      project: projectExternal,
-      tasks: taskExternal,
-      milestones: milestoneExternal
-    }
-  };
-
-  context.prompt = [
-    'Saya akan memberikan JSON konteks project Odoo Lokalmart hasil export dari Studio2.',
-    'Tolong baca perkembangan terakhir project ini, pahami struktur task/subtask, chatter/update, milestone, dan external ID-nya.',
-    'Setelah itu bantu kembangkan isi project agar sesuai dengan diskusi Lokalmart terbaru, tanpa membuat task liar tanpa parent, dan siapkan rekomendasi patch XLSX/import yang aman.',
-    '',
-    'JSON_CONTEXT:',
-    JSON.stringify(context, null, 2)
+function buildProjectPrompt(project, tasks, milestones, updates) {
+  return [
+    'Saya memberikan export konteks satu project Odoo Lokalmart.',
+    `Project: ${project.name || project.display_name || project.id}`,
+    `Jumlah task: ${tasks.length}. Jumlah milestone: ${milestones.length}. Jumlah update: ${updates.length}.`,
+    'Tolong baca perkembangan terakhir, bandingkan dengan diskusi Lokalmart sebelumnya, lalu kembangkan struktur ide/task agar lebih matang, hierarkis, import-safe, dan tidak membuat task liar tanpa parent.',
+    'Jika membuat XLSX patch, gunakan aturan: __action, _external_id, _model, Many2one pakai field_external_id, Many2many pakai field_external_ids, custom field pakai x_.'
   ].join('\n');
-
-  return context;
 }
 
-async function projectWorkbook(context) {
-  const wb = XLSX.utils.book_new();
-  addSheet(wb, 'project', [flattenForSheet(context.project)]);
-  addSheet(wb, 'counts', [context.counts]);
-  addSheet(wb, 'tasks', (context.tasks || []).map(t => ({ ...flattenForSheet(t), description_text: stripHtml(t.description) })));
-  addSheet(wb, 'milestones', (context.milestones || []).map(m => flattenForSheet(m)));
-  addSheet(wb, 'updates', (context.updates || []).map(u => flattenForSheet(u)));
-  addSheet(wb, 'messages', (context.messages || []).map(m => flattenForSheet(m)));
-  addSheet(wb, 'external_ids_tasks', context.external_ids && context.external_ids.tasks ? context.external_ids.tasks : []);
-  addSheet(wb, 'prompt', [{ prompt: context.prompt }]);
-  const name = sanitizeExternalName((context.project && (context.project.name || context.project.display_name)) || 'project');
-  return workbookResponse(wb, `lokalmart_project_context_${name}.xlsx`);
+async function barcodeLookup(ctx, payload = {}) {
+  const barcode = String(payload.barcode || '').trim();
+  if (!barcode) throw new UserError('Barcode kosong.');
+  const productProduct = await readIfModel(ctx, 'product.product', [[[ 'barcode', '=', barcode ]]], ['id', 'display_name', 'barcode', 'product_tmpl_id', 'lst_price', 'default_code'], 20);
+  const productTemplate = await readIfModel(ctx, 'product.template', [[[ 'barcode', '=', barcode ]]], ['id', 'name', 'barcode', 'list_price', 'default_code', 'categ_id'], 20);
+  return { barcode, product_product: productProduct, product_template: productTemplate, found: productProduct.length + productTemplate.length };
 }
 
-async function genericExport(odoo, payload = {}) {
-  const models = Array.isArray(payload.models) && payload.models.length ? payload.models : DEFAULT_MODELS;
-  const limit = Math.min(Number(payload.limit || 1000), 5000);
-  const wb = XLSX.utils.book_new();
-  const summary = [];
-  for (const model of models) {
-    try {
-      if (!(await odoo.hasModel(model))) {
-        summary.push({ model, available: false, error: 'Tidak tersedia / tidak bisa diakses' });
-        continue;
-      }
-      const fields = await odoo.fieldsGet(model);
-      const wanted = payload.fields && payload.fields[model] ? payload.fields[model] : ['id', 'display_name', 'name', 'active', 'create_date', 'write_date'];
-      const safeFields = pickFields(fields, wanted);
-      if (!safeFields.includes('id')) safeFields.unshift('id');
-      const rows = await odoo.searchRead(model, payload.domain || [], safeFields, limit, 'id desc');
-      summary.push({ model, available: true, rows: rows.length, exported_fields: safeFields.join(', ') });
-      addSheet(wb, model.replace(/\./g, '_').slice(0, 31), rows.map(r => flattenForSheet(r)));
-    } catch (err) {
-      summary.push({ model, available: false, error: err.message });
-    }
-  }
-  addSheet(wb, 'summary', summary);
-  return workbookResponse(wb, `lokalmart_export_${new Date().toISOString().slice(0, 10)}.xlsx`);
-}
-
-async function readRpc(odoo, payload = {}) {
+async function readRecords(ctx, payload = {}) {
   const model = String(payload.model || '').trim();
-  const method = String(payload.method || '').trim();
-  if (!model || !method) throw new Error('model dan method wajib diisi.');
-  if (!SAFE_READ_METHODS.has(method)) throw new Error('Method tidak diizinkan untuk readOnlyRpc: ' + method);
-  const args = Array.isArray(payload.args) ? payload.args : [];
-  const kwargs = payload.kwargs || {};
-  return { result: await odoo.executeKw(model, method, args, kwargs) };
+  if (!model) throw new UserError('Model kosong.');
+  const limit = normalizeLimit(payload.limit, 100, 2000);
+  const domain = Array.isArray(payload.domain) ? payload.domain : [];
+  const fields = parseCsvList(payload.fields, await defaultReadableFields(ctx, model));
+  return await ctx.execute(model, 'search_read', [domain], { fields, limit, order: payload.order || 'write_date desc' });
 }
 
-async function barcodeLookup(odoo, payload = {}) {
-  const barcode = String(payload.barcode || payload.code || '').trim();
-  if (!barcode) throw new Error('Barcode kosong.');
-  const fields = ['id', 'display_name', 'name', 'barcode', 'list_price', 'standard_price', 'default_code'];
-  const products = await odoo.searchRead('product.product', [['barcode', '=', barcode]], fields, 20, 'id desc');
-  return { barcode, products };
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+function objectToWorkbookBase64(sheets) {
+  const wb = XLSX.utils.book_new();
+  for (const [name, value] of Object.entries(sheets || {})) {
+    const rows = Array.isArray(value) ? value : [value];
+    const normalized = rows.map(row => flattenRecord(row));
+    const ws = XLSX.utils.json_to_sheet(normalized.length ? normalized : [{ empty: '' }]);
+    XLSX.utils.book_append_sheet(wb, ws, safeSheetName(name));
+  }
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+  return buf.toString('base64');
 }
 
-async function handleAction(body) {
-  const action = String(body.action || body.__action || '').trim();
-  const payload = body.payload && typeof body.payload === 'object' ? body.payload : body;
-  const odoo = new OdooJsonRpc(body.target || payload.target || {});
-
-  switch (action) {
-    case 'health':
-    case 'ai_health':
-      return { ok: true, service: 'Lokalmart Studio2 Vercel API', time: new Date().toISOString() };
-
-    case 'test_connection':
-    case 'test':
-      return testConnection(odoo);
-
-    case 'ai_schema_scan':
-    case 'schema_scan':
-    case 'scan_schema':
-      return { schema: await schemaScan(odoo, payload) };
-
-    case 'ai_data_audit':
-    case 'data_audit':
-      return { audit: await dataAudit(odoo, payload) };
-
-    case 'ai_context_export':
-    case 'context_export':
-      return { context: await contextExport(odoo, payload) };
-
-    case 'ai_export_xlsx': {
-      const context = await contextExport(odoo, payload);
-      return await contextWorkbook(context, 'lokalmart_context_export.xlsx');
-    }
-
-    case 'ai_project_list':
-    case 'project_list':
-      return await listProjects(odoo);
-
-    case 'ai_project_context_export':
-    case 'project_context_export':
-      return { context: await projectContextExport(odoo, payload) };
-
-    case 'ai_project_xlsx_export': {
-      const context = await projectContextExport(odoo, payload);
-      return await projectWorkbook(context);
-    }
-
-    case 'export_records':
-    case 'full_export':
-    case 'partial_export':
-      return await genericExport(odoo, payload);
-
-    case 'import_rows':
-    case 'import_xlsx_rows':
-    case 'import_batch':
-    case 'import':
-      return { report: await importRows(odoo, payload) };
-
-    case 'barcode_lookup':
-    case 'scan_barcode':
-      return await barcodeLookup(odoo, payload);
-
-    case 'ai_read_rpc':
-    case 'read_rpc':
-      return await readRpc(odoo, payload);
-
-    default:
-      throw new Error('Action tidak dikenal: ' + (action || '(kosong)'));
+function flattenRecord(row, prefix = '', out = {}) {
+  if (row === null || row === undefined) return out;
+  if (typeof row !== 'object' || row instanceof Date) {
+    out[prefix || 'value'] = row;
+    return out;
   }
+  if (Array.isArray(row)) {
+    out[prefix || 'value'] = JSON.stringify(row);
+    return out;
+  }
+  for (const [key, value] of Object.entries(row)) {
+    const next = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) flattenRecord(value, next, out);
+    else out[next] = Array.isArray(value) ? JSON.stringify(value) : value;
+  }
+  return out;
 }
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+function safeSheetName(name) {
+  return String(name || 'sheet').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31) || 'sheet';
+}
 
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
-    res.end();
-    return;
-  }
+function sanitizeFilename(name) {
+  return String(name || 'export.xlsx').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 120);
+}
 
-  if (req.method === 'GET') {
-    sendJson(res, 200, {
-      ok: true,
-      service: 'Lokalmart Studio2 Vercel API',
-      usage: 'POST JSON ke /api/odoo dengan { action, target, payload }',
-      actions: [
-        'test_connection',
-        'ai_schema_scan',
-        'ai_data_audit',
-        'ai_context_export',
-        'ai_export_xlsx',
-        'ai_project_list',
-        'ai_project_context_export',
-        'ai_project_xlsx_export',
-        'export_records',
-        'import_rows',
-        'barcode_lookup'
-      ]
-    });
-    return;
-  }
-
-  if (req.method !== 'POST') {
-    sendJson(res, 405, { ok: false, error: 'Method tidak diizinkan. Gunakan POST.' });
-    return;
-  }
-
-  try {
-    const body = await readJsonBody(req);
-    const data = await handleAction(body);
-    sendJson(res, 200, { ok: true, ...data });
-  } catch (err) {
-    sendJson(res, 500, { ok: false, error: normalizeError(err) });
-  }
-};
+function dateStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}

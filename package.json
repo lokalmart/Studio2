@@ -1,15 +1,20 @@
 {
-  "name": "lokalmart-studio2-vercel",
-  "version": "2.0.2",
+  "name": "lokalmart-studio-v3-vercel",
+  "version": "3.0.0",
   "private": true,
+  "description": "Clean Vercel rebuild for Lokalmart Studio admin workflow.",
+  "main": "api/odoo.js",
   "scripts": {
-    "lint": "node -c api/odoo.js",
-    "dev": "vercel dev"
+    "start": "vercel dev",
+    "lint": "node -c api/odoo.js && node scripts/check-html.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "vercel": "^34.0.0"
+    "vercel": "latest"
   }
 }
