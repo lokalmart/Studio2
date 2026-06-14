@@ -1,16 +1,15 @@
 {
-  "name": "lokalmart-studio-v2-netlify-direct-upload",
-  "version": "2.0.1",
+  "name": "lokalmart-studio2-vercel",
+  "version": "2.0.2",
   "private": true,
   "scripts": {
-    "lint": "node -c netlify/functions/odoo.js",
-    "start": "netlify dev",
-    "deploy": "netlify deploy --prod"
+    "lint": "node -c api/odoo.js",
+    "dev": "vercel dev"
   },
   "dependencies": {
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "netlify-cli": "^17.38.1"
+    "vercel": "^34.0.0"
   }
 }
