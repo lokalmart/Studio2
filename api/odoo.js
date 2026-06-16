@@ -35,16 +35,16 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return json(res, 200, {
       ok: true,
-      name: 'Lokalmart Studio2 Fast Import API',
+      name: 'Lokalmart Studio2 Import Export API',
       endpoint: '/api/odoo',
       usage: 'POST JSON { action, target, payload }',
       actions: [
-        'health', 'test_connection', 'schema_scan', 'data_audit', 'context_export',
-        'xlsx_preview', 'import_xlsx', 'full_export', 'project_list',
-        'project_context_export', 'project_xlsx_export', 'barcode_lookup', 'read_records'
+        'health', 'test_connection', 'xlsx_preview', 'import_xlsx',
+        'full_export', 'project_list', 'project_xlsx_export' // UI only exposes Import & Export
       ],
       import_notes: [
-        'import_xlsx now caches fields/model/xmlid per request',
+        'Studio UI is simplified to Import and Export only.',
+        'Import uses cached fields/model/xmlid per request.',
         'image_url is not imported unless payload.options.import_images=true',
         `default max rows per request: ${DEFAULT_IMPORT_ROWS}`
       ]

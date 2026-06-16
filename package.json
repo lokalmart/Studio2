@@ -1,20 +1,9 @@
 {
-  "name": "lokalmart-studio-v3-vercel",
-  "version": "3.0.0",
+  "name": "lokalmart-studio2-import-export",
+  "version": "4.0.0",
   "private": true,
-  "description": "Clean Vercel rebuild for Lokalmart Studio admin workflow.",
-  "main": "api/odoo.js",
-  "scripts": {
-    "start": "vercel dev",
-    "lint": "node -c api/odoo.js && node scripts/check-html.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
+  "description": "Lokalmart Studio2 simplified Import Export editor for Vercel and Odoo",
   "dependencies": {
     "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "vercel": "latest"
   }
 }
