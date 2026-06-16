@@ -40,7 +40,7 @@ module.exports = async function handler(req, res) {
       usage: 'POST JSON { action, target, payload }',
       actions: [
         'health', 'test_connection', 'xlsx_preview', 'import_xlsx',
-        'full_export', 'project_list', 'project_xlsx_export', 'model_fields', 'name_search' // UI only exposes Import & Export
+        'full_export', 'project_list', 'project_xlsx_export', 'model_fields', 'name_search', 'record_scan', 'selected_export' // UI only exposes Import & Export
       ],
       import_notes: [
         'Studio UI is simplified to Import and Export only.',
@@ -65,7 +65,7 @@ module.exports = async function handler(req, res) {
     const requireTargetActions = new Set([
       'test_connection', 'schema_scan', 'data_audit', 'context_export', 'xlsx_preview',
       'import_xlsx', 'full_export', 'project_list', 'project_context_export',
-      'project_xlsx_export', 'model_fields', 'name_search', 'barcode_lookup', 'read_records'
+      'project_xlsx_export', 'model_fields', 'name_search', 'record_scan', 'selected_export', 'barcode_lookup', 'read_records'
     ]);
     if (requireTargetActions.has(action)) validateTarget(target);
 
@@ -96,6 +96,8 @@ module.exports = async function handler(req, res) {
     if (action === 'project_xlsx_export') return json(res, 200, { ok: true, export: await projectXlsxExport(ctx, payload) });
     if (action === 'model_fields') return json(res, 200, { ok: true, result: await modelFields(ctx, payload) });
     if (action === 'name_search') return json(res, 200, { ok: true, result: await nameSearch(ctx, payload) });
+    if (action === 'record_scan') return json(res, 200, { ok: true, result: await recordScan(ctx, payload) });
+    if (action === 'selected_export') return json(res, 200, { ok: true, export: await selectedExport(ctx, payload) });
     if (action === 'barcode_lookup') return json(res, 200, { ok: true, result: await barcodeLookup(ctx, payload) });
     if (action === 'read_records') return json(res, 200, { ok: true, result: await readRecords(ctx, payload) });
 
@@ -798,6 +800,42 @@ async function nameSearch(ctx, payload = {}) {
   return { model, name, result };
 }
 
+async function recordScan(ctx, payload = {}) {
+  const model = String(payload.model || '').trim();
+  if (!model) throw new UserError('Model kosong.');
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+  const limit = normalizeLimit(payload.limit, 500, 3000);
+  const search = String(payload.search || payload.q || '').trim();
+  const fields = await safeFields(ctx, model, ['id', 'display_name', 'name', 'active', 'write_date', 'create_date', 'email', 'phone', 'mobile', 'barcode', 'default_code', 'list_price']);
+  let ids = [];
+  let count = null;
+  if (search) {
+    const pairs = await ctx.execute(model, 'name_search', [search, [], 'ilike', limit]);
+    ids = (pairs || []).map(p => Array.isArray(p) ? p[0] : p).filter(Boolean);
+    count = ids.length;
+    if (!ids.length) return { model, search, count: 0, records: [] };
+    const records = await ctx.execute(model, 'read', [ids, fields]);
+    return { model, search, count, records };
+  }
+  count = await safeExecute(ctx, model, 'search_count', [[]], {}, null);
+  const records = await ctx.execute(model, 'search_read', [[]], { fields, limit, order: 'write_date desc' });
+  return { model, search, count, records };
+}
+
+async function selectedExport(ctx, payload = {}) {
+  const model = String(payload.model || '').trim();
+  if (!model) throw new UserError('Model kosong.');
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+  const ids = (Array.isArray(payload.ids) ? payload.ids : parseCsvList(payload.ids, [])).map(Number).filter(Boolean);
+  if (!ids.length) throw new UserError('Tidak ada record yang dipilih.');
+  const fields = payload.fields ? parseCsvList(payload.fields, []) : await defaultReadableFields(ctx, model);
+  const safe = await safeFields(ctx, model, fields);
+  const records = await ctx.execute(model, 'read', [ids, safe]);
+  const sheets = { [model]: modelRowsForWorkbook(model, records, 'update') };
+  const name = sanitizeFilename(`lokalmart_selected_${model}_${ids.length}_${dateStamp()}.xlsx`);
+  return { file_name: name, mime: XLSX_MIME, base64: objectToWorkbookBase64(sheets) };
+}
+
 async function fullExport(ctx, payload = {}) {
   const models = parseCsvList(payload.models, ['project.project', 'project.task', 'knowledge.article', 'product.template']);
   const limit = normalizeLimit(payload.limit, 300, 3000);
@@ -999,13 +1037,41 @@ function objectToWorkbookBase64(sheets) {
     if (rows.length === 1 && rows[0] && Array.isArray(rows[0].__headers_only)) {
       ws = XLSX.utils.aoa_to_sheet([rows[0].__headers_only]);
     } else {
-      const normalized = rows.map(row => flattenRecord(row));
+      const normalized = rows.map(row => sanitizeWorkbookRow(flattenRecord(row)));
       ws = XLSX.utils.json_to_sheet(normalized.length ? normalized : [{ _context: 'empty_sheet' }]);
     }
     XLSX.utils.book_append_sheet(wb, ws, safeSheetName(name));
   }
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
   return buf.toString('base64');
+}
+
+function sanitizeWorkbookRow(row) {
+  const out = {};
+  const truncated = [];
+  for (const [key, value] of Object.entries(row || {})) {
+    const safe = safeWorkbookCell(value);
+    out[key] = safe.value;
+    if (safe.truncated) truncated.push(key);
+  }
+  if (truncated.length) out._studio2_truncated_fields = truncated.join(', ');
+  return out;
+}
+
+function safeWorkbookCell(value) {
+  if (value === null || value === undefined) return { value: '', truncated: false };
+  let text;
+  if (value instanceof Date) return { value, truncated: false };
+  if (typeof value === 'object') text = JSON.stringify(value);
+  else text = String(value);
+  // Excel XLSX cells have a 32,767-character text limit. SheetJS throws before writing when a cell exceeds it.
+  if (text.length > 32000) {
+    return {
+      value: text.slice(0, 31900) + '\n\n[Studio2: teks dipotong agar aman untuk batas 32767 karakter Excel]',
+      truncated: true
+    };
+  }
+  return { value: typeof value === 'string' ? text : value, truncated: false };
 }
 
 function flattenRecord(row, prefix = '', out = {}) {

@@ -1,34 +1,35 @@
-# Studio2 Native Import Export Patch v5
+# Studio2 Native Import Export Patch v6
 
-Patch ini mengganti Studio2 menjadi workflow yang lebih fokus dan lebih “native” untuk Odoo:
+Patch ini menyempurnakan Studio2 agar lebih dekat ke kebutuhan all-in-one import/export Odoo Lokalmart.
 
-- Menu utama hanya **Import** dan **Export**.
-- Semua proses melewati: **Preview → Editor → Validasi → Eksekusi/Download**.
-- Panel/card yang tidak sedang difokuskan otomatis mengecil setelah file/export terbuka.
-- Sheet context/helper seperti `task_hierarchy`, `chatter_project`, `chatter_tasks`, `prompt`, `README_AI`, `Dashboard`, dan `validation_report` tidak dianggap error import.
-- Sheet hasil export project sekarang memakai sheet model yang lebih aman:
-  - `project.project`
-  - `project.task`
-  - `project.milestone`
-  - `project.update`
-  - `ir.model.data`
-  - context sheet tetap dipisah.
-- Editor membaca schema Odoo via action `model_fields`, sehingga field dapat ditampilkan menurut tipe:
-  - boolean checkbox
-  - selection dropdown
-  - date/datetime input
-  - text/html textarea
-  - many2one/many2many dengan hint relation
-- Editor khusus tetap ada untuk:
-  - Product
-  - Contact
-  - Project/Task/Milestone/Update
-  - Knowledge
-  - Sales
-  - Generic dynamic model
-- Backend import tetap memakai cache login/model/fields/xmlid per request agar lebih stabil di Vercel.
-- `image_url` tetap tidak otomatis diupload ke `image_1920` kecuali `import_images=true`, supaya import tidak berat.
-- Import backend sekarang bisa membaca nilai Many2one/M2M hasil export Odoo seperti `[73,"Project Name"]` dan mengambil ID-nya.
+## Perbaikan utama v6
+
+1. **Bug editor res.partner diperbaiki**
+   - Sheet/model `res.partner` sekarang selalu masuk **Contact Editor**.
+   - Deteksi editor sekarang memprioritaskan model Odoo terlebih dahulu, baru membaca kolom XLSX.
+   - Jadi kolom seperti `default_code` atau field produk lain tidak akan membuat `res.partner` keliru masuk Product Editor.
+
+2. **Error Excel 32767 karakter diperbaiki**
+   - Export XLSX sekarang memotong cell panjang ke batas aman.
+   - Kolom `_studio2_truncated_fields` otomatis ditambahkan jika ada field yang dipotong.
+   - Ini mengatasi error seperti: `Text length must not exceed 32767 characters`.
+   - Biasanya sumbernya dari `body`, `body_html`, `description`, chatter, atau HTML panjang dari Odoo.
+
+3. **Export model sekarang bisa scan dan pilih record**
+   - Buka Export → Model.
+   - Isi model, contoh: `res.partner`, `product.template`, `project.task`.
+   - Klik **Scan record**.
+   - Pilih record satu per satu, pilih semua terlihat, atau kosongkan pilihan.
+   - Klik **Export record terpilih**.
+   - Hasilnya tetap masuk editor XLSX dulu sebelum didownload.
+
+4. **Backend action baru**
+   - `record_scan`: membaca daftar record ringan untuk dipilih.
+   - `selected_export`: export hanya record yang dipilih.
+
+5. **Tetap mempertahankan workflow utama**
+   - Import: Upload → Preview → Editor → Validasi → Import.
+   - Export: Pilih sumber → Scan/Pilih → Editor → Download/Patch.
 
 ## File yang diganti
 
@@ -50,14 +51,17 @@ README_NATIVE_IMPORT_EXPORT_PATCH.md
 2. Replace file repo `lokalmart/Studio2` dengan isi patch ini.
 3. Commit ke GitHub.
 4. Redeploy Vercel.
-5. Buka `/api/odoo` dan pastikan action baru muncul: `model_fields` dan `name_search`.
-6. Buka `/` dan coba flow:
-   - Import XLSX → Preview → Editor → Validasi → Import.
-   - Export Project → pilih project → Export ke editor → Download hasil edit / Buat import patch.
+5. Buka `/api/odoo` dan pastikan action baru muncul:
+   - `model_fields`
+   - `name_search`
+   - `record_scan`
+   - `selected_export`
+6. Buka `/`, lalu tes:
+   - Export → Model → model `res.partner` → Scan record → pilih beberapa record → Export record terpilih.
+   - Pastikan sheet `res.partner` terbuka sebagai Contact Editor, bukan Product Editor.
 
-## Catatan penting
+## Catatan teknis
 
-- Untuk export project, sheet chatter dan hierarchy adalah konteks untuk ChatGPT, bukan data import.
-- Untuk membuat XLSX yang siap diimport ulang, gunakan tombol **Buat import patch**.
-- Kalau Odoo Online lambat, import tetap lebih aman per 120–250 row/request.
-- Jangan import foto massal lewat Vercel kecuali benar-benar perlu; foto produk lebih baik divalidasi di editor lalu diupload bertahap.
+- Export cepat model tetap ada untuk sample cepat, tetapi workflow yang disarankan adalah scan dan pilih record.
+- Cell panjang tidak dibuang total, hanya dipotong agar XLSX valid. Untuk backup full HTML/body yang sangat panjang, lebih baik export JSON terpisah.
+- Import foto massal tetap tidak direkomendasikan lewat Vercel. Validasi foto boleh di editor, upload foto sebaiknya bertahap.
