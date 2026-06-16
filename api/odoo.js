@@ -40,7 +40,7 @@ module.exports = async function handler(req, res) {
       usage: 'POST JSON { action, target, payload }',
       actions: [
         'health', 'test_connection', 'xlsx_preview', 'import_xlsx',
-        'full_export', 'project_list', 'project_xlsx_export' // UI only exposes Import & Export
+        'full_export', 'project_list', 'project_xlsx_export', 'model_fields', 'name_search' // UI only exposes Import & Export
       ],
       import_notes: [
         'Studio UI is simplified to Import and Export only.',
@@ -65,7 +65,7 @@ module.exports = async function handler(req, res) {
     const requireTargetActions = new Set([
       'test_connection', 'schema_scan', 'data_audit', 'context_export', 'xlsx_preview',
       'import_xlsx', 'full_export', 'project_list', 'project_context_export',
-      'project_xlsx_export', 'barcode_lookup', 'read_records'
+      'project_xlsx_export', 'model_fields', 'name_search', 'barcode_lookup', 'read_records'
     ]);
     if (requireTargetActions.has(action)) validateTarget(target);
 
@@ -94,6 +94,8 @@ module.exports = async function handler(req, res) {
     if (action === 'project_list') return json(res, 200, { ok: true, projects: await projectList(ctx, payload) });
     if (action === 'project_context_export') return json(res, 200, { ok: true, context: await projectContextExport(ctx, payload) });
     if (action === 'project_xlsx_export') return json(res, 200, { ok: true, export: await projectXlsxExport(ctx, payload) });
+    if (action === 'model_fields') return json(res, 200, { ok: true, result: await modelFields(ctx, payload) });
+    if (action === 'name_search') return json(res, 200, { ok: true, result: await nameSearch(ctx, payload) });
     if (action === 'barcode_lookup') return json(res, 200, { ok: true, result: await barcodeLookup(ctx, payload) });
     if (action === 'read_records') return json(res, 200, { ok: true, result: await readRecords(ctx, payload) });
 
@@ -258,7 +260,7 @@ async function modelExists(ctx, model) {
 
 async function fieldsGet(ctx, model) {
   if (ctx.fieldsCache.has(model)) return ctx.fieldsCache.get(model);
-  const fields = await ctx.execute(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'required', 'readonly', 'selection'] });
+  const fields = await ctx.execute(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'required', 'readonly', 'store', 'selection', 'help', 'digits'] });
   ctx.fieldsCache.set(model, fields || {});
   return fields || {};
 }
@@ -390,7 +392,8 @@ function sheetToRows(workbook, sheetName) {
 function sheetShouldImport(sheetName, rows) {
   const normalized = String(sheetName || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
   if (HELPER_SHEETS.has(normalized)) return false;
-  if (String(sheetName || '').includes('.')) return true;
+  if (['TASK_HIERARCHY', 'CHATTER_PROJECT', 'CHATTER_TASKS', 'PROMPT', 'README_AI'].includes(normalized)) return false;
+  if (guessModelFromSheet(sheetName)) return true;
   return rows.some(r => String(r._model || r.__model || '').trim());
 }
 
@@ -567,9 +570,22 @@ function cleanRow(row) {
 }
 
 function guessModelFromSheet(sheetName) {
-  const name = String(sheetName || '').trim();
-  if (name.includes('.')) return name;
-  return '';
+  const raw = String(sheetName || '').trim();
+  const name = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  if (raw.includes('.')) return raw;
+  const aliases = {
+    project: 'project.project', projects: 'project.project',
+    task: 'project.task', tasks: 'project.task', project_tasks: 'project.task',
+    milestones: 'project.milestone', milestone: 'project.milestone',
+    updates: 'project.update', project_updates: 'project.update',
+    contacts: 'res.partner', contact: 'res.partner', partners: 'res.partner', res_partner: 'res.partner',
+    products: 'product.template', product: 'product.template', product_template: 'product.template',
+    categories: 'product.category', product_category: 'product.category',
+    public_categories: 'product.public.category', product_public_category: 'product.public.category',
+    knowledge: 'knowledge.article', articles: 'knowledge.article', knowledge_article: 'knowledge.article',
+    external_ids: 'ir.model.data', xmlids: 'ir.model.data'
+  };
+  return aliases[name] || '';
 }
 
 async function rowToVals(ctx, row, model, fieldsMeta, options = {}) {
@@ -665,11 +681,19 @@ function castValue(value, meta) {
   if (type === 'datetime') return toOdooDatetime(value);
   if (type === 'many2one') {
     if (typeof value === 'number') return value;
-    if (/^\d+$/.test(String(value))) return Number.parseInt(value, 10);
+    const parsed = parseOdooArrayValue(value);
+    if (Array.isArray(parsed) && Number.isFinite(Number(parsed[0]))) return Number(parsed[0]);
+    if (/^\d+$/.test(String(value).trim())) return Number.parseInt(value, 10);
     return undefined;
   }
-  if (type === 'many2many') {
-    const ids = parseCsvList(value, []).map(v => Number.parseInt(v, 10)).filter(Number.isFinite);
+  if (type === 'many2many' || type === 'one2many') {
+    const parsed = parseOdooArrayValue(value);
+    let ids = [];
+    if (Array.isArray(parsed)) {
+      ids = parsed.map(v => Array.isArray(v) ? Number(v[0]) : Number(v)).filter(Number.isFinite);
+    } else {
+      ids = parseCsvList(value, []).map(v => Number.parseInt(v, 10)).filter(Number.isFinite);
+    }
     return [[6, 0, ids]];
   }
   return value;
@@ -684,6 +708,15 @@ function toOdooDate(value) {
 function toOdooDatetime(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().replace('T', ' ').slice(0, 19);
   return String(value).trim();
+}
+
+
+function parseOdooArrayValue(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s.startsWith('[') || !s.endsWith(']')) return null;
+  try { return JSON.parse(s.replace(/'/g, '"')); } catch (_) { return null; }
 }
 
 function splitXmlId(xmlid) {
@@ -741,6 +774,30 @@ async function fetchImageAsBase64(url) {
   }
 }
 
+
+async function modelFields(ctx, payload = {}) {
+  const model = String(payload.model || '').trim();
+  if (!model) throw new UserError('Model kosong.');
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+  const fg = await fieldsGet(ctx, model);
+  const fields = Object.entries(fg).map(([name, meta]) => ({ name, ...meta })).sort((a, b) => a.name.localeCompare(b.name));
+  const required = fields.filter(f => f.required).map(f => f.name);
+  const writable = fields.filter(f => !f.readonly || f.required).map(f => f.name);
+  const preferred = await defaultReadableFields(ctx, model);
+  return { model, field_count: fields.length, required, writable, preferred, fields };
+}
+
+async function nameSearch(ctx, payload = {}) {
+  const model = String(payload.model || '').trim();
+  const name = String(payload.name || payload.q || '').trim();
+  const limit = normalizeLimit(payload.limit, 20, 80);
+  const domain = Array.isArray(payload.domain) ? payload.domain : [];
+  if (!model) throw new UserError('Model kosong.');
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+  const result = await ctx.execute(model, 'name_search', [name, domain, 'ilike', limit]);
+  return { model, name, result };
+}
+
 async function fullExport(ctx, payload = {}) {
   const models = parseCsvList(payload.models, ['project.project', 'project.task', 'knowledge.article', 'product.template']);
   const limit = normalizeLimit(payload.limit, 300, 3000);
@@ -758,7 +815,11 @@ async function fullExport(ctx, payload = {}) {
   }
 
   if (format === 'xlsx') {
-    return { file_name: `lokalmart_full_export_${dateStamp()}.xlsx`, mime: XLSX_MIME, base64: objectToWorkbookBase64(result.models) };
+    const sheets = {};
+    for (const [model, box] of Object.entries(result.models || {})) {
+      sheets[model] = modelRowsForWorkbook(model, box.records || [], 'update');
+    }
+    return { file_name: `lokalmart_full_export_${dateStamp()}.xlsx`, mime: XLSX_MIME, base64: objectToWorkbookBase64(sheets) };
   }
   return result;
 }
@@ -810,18 +871,33 @@ async function projectContextExport(ctx, payload = {}) {
 async function projectXlsxExport(ctx, payload = {}) {
   const context = await projectContextExport(ctx, payload);
   const sheets = {
-    project: [context.project],
-    tasks: context.tasks,
-    task_hierarchy: flattenHierarchy(context.task_hierarchy),
-    milestones: context.milestones,
-    updates: context.updates,
-    chatter_project: context.chatter.project,
-    chatter_tasks: context.chatter.tasks,
-    external_ids: context.external_ids,
-    prompt: [{ prompt: context.prompt_for_chatgpt }]
+    'project.project': modelRowsForWorkbook('project.project', [context.project], 'update'),
+    'project.task': modelRowsForWorkbook('project.task', context.tasks, 'update'),
+    'task_hierarchy': flattenHierarchy(context.task_hierarchy),
+    'project.milestone': modelRowsForWorkbook('project.milestone', context.milestones, 'update', ['_model', '__action', 'id', 'name', 'project_id', 'deadline', 'is_reached', 'create_date', 'write_date']),
+    'project.update': modelRowsForWorkbook('project.update', context.updates, 'update', ['_model', '__action', 'id', 'name', 'project_id', 'status', 'progress', 'description', 'create_date', 'write_date']),
+    'chatter_project': context.chatter.project.map(r => ({ _context: 'chatter_project_not_imported', ...r })),
+    'chatter_tasks': context.chatter.tasks.map(r => ({ _context: 'chatter_task_not_imported', ...r })),
+    'ir.model.data': modelRowsForWorkbook('ir.model.data', context.external_ids, 'skip'),
+    'README_AI': [{
+      kind: 'project_export_for_chatgpt_and_xlsx_editor',
+      generated_at: context.generated_at,
+      project: context.project.name || context.project.display_name || context.project.id,
+      instruction: 'Sheet project.project dan project.task sudah diberi _model dan __action=update supaya editor Studio2 tidak menganggapnya data mentah. Sheet chatter/task_hierarchy adalah konteks, bukan sheet import.',
+      prompt_for_chatgpt: context.prompt_for_chatgpt
+    }]
   };
   const name = sanitizeFilename(`project_${context.project.name || context.project.id}_${dateStamp()}.xlsx`);
   return { file_name: name, mime: XLSX_MIME, base64: objectToWorkbookBase64(sheets) };
+}
+
+function modelRowsForWorkbook(model, rows, action = 'update', emptyHeaders = null) {
+  const source = Array.isArray(rows) ? rows : [];
+  if (!source.length) {
+    if (emptyHeaders) return [{ __headers_only: emptyHeaders }];
+    return [{ __headers_only: ['_model', '__action', 'id', 'name'] }];
+  }
+  return source.map(row => ({ _model: model, __action: action, ...flattenRecord(row) }));
 }
 
 async function safeFields(ctx, model, wanted) {
@@ -919,8 +995,13 @@ function objectToWorkbookBase64(sheets) {
   const wb = XLSX.utils.book_new();
   for (const [name, value] of Object.entries(sheets || {})) {
     const rows = Array.isArray(value) ? value : [value];
-    const normalized = rows.map(row => flattenRecord(row));
-    const ws = XLSX.utils.json_to_sheet(normalized.length ? normalized : [{ empty: '' }]);
+    let ws;
+    if (rows.length === 1 && rows[0] && Array.isArray(rows[0].__headers_only)) {
+      ws = XLSX.utils.aoa_to_sheet([rows[0].__headers_only]);
+    } else {
+      const normalized = rows.map(row => flattenRecord(row));
+      ws = XLSX.utils.json_to_sheet(normalized.length ? normalized : [{ _context: 'empty_sheet' }]);
+    }
     XLSX.utils.book_append_sheet(wb, ws, safeSheetName(name));
   }
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });

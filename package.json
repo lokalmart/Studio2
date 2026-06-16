@@ -1,8 +1,8 @@
 {
-  "name": "lokalmart-studio2-import-export",
-  "version": "4.0.0",
+  "name": "lokalmart-studio2-native-import-export",
+  "version": "5.0.0",
   "private": true,
-  "description": "Lokalmart Studio2 simplified Import Export editor for Vercel and Odoo",
+  "description": "Lokalmart Studio2 Import/Export native-like dynamic XLSX editor for Vercel and Odoo",
   "dependencies": {
     "xlsx": "^0.18.5"
   }
