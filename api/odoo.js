@@ -1,41 +1,56 @@
 /*
-  Lokalmart Studio v3 - single Vercel API
-  ------------------------------------------------------------
-  One file, one endpoint: /api/odoo
-  Frontend sends: { action, target, payload }
+ Lokalmart Studio2 - fast import patch for Vercel
+ Drop-in replacement: /api/odoo.js
+ Frontend contract is preserved: POST /api/odoo { action, target, payload }
 
-  Target shape:
-  {
-    url: 'https://edu-lokalmart.odoo.com',
-    db: 'edu-lokalmart',
-    username: 'admin@example.com',
-    password: 'Odoo API key or local password'
-  }
+ Main fixes:
+ - Cache Odoo login, model existence, fields_get, and external IDs inside one request.
+ - Skip helper/non-import sheets automatically.
+ - Make image_url import opt-in to avoid slow imports and large writes.
+ - Cap safe rows per request unless force_large is enabled.
+ - Return clearer per-sheet/per-row report.
 */
+'use strict';
 
 const XLSX = require('xlsx');
 
-const MAX_BODY_BYTES = 18 * 1024 * 1024;
+const MAX_BODY_BYTES = 22 * 1024 * 1024;
 const DEFAULT_MODULE = 'lokalmart_studio';
+const DEFAULT_IMPORT_ROWS = 120;
+const SAFE_IMPORT_CAP = 250;
+const LARGE_IMPORT_CAP = 3000;
 const DEFAULT_LIMIT = 250;
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+const HELPER_SHEETS = new Set([
+  'README', 'README_IMPORT', 'README IMPORT', 'DASHBOARD', 'VALIDATION', 'VALIDATION_REPORT',
+  'AI_MEMORY_INDEX', 'PROMPT_HANDBOOK', 'RELATIONSHIP_MAP', 'TASK_DATABASE', 'NOTES', 'INFO'
+]);
 
 module.exports = async function handler(req, res) {
   applyCors(res);
+
   if (req.method === 'OPTIONS') return json(res, 200, { ok: true });
+
   if (req.method === 'GET') {
     return json(res, 200, {
       ok: true,
-      name: 'Lokalmart Studio v3 Vercel API',
+      name: 'Lokalmart Studio2 Fast Import API',
       endpoint: '/api/odoo',
       usage: 'POST JSON { action, target, payload }',
       actions: [
         'health', 'test_connection', 'schema_scan', 'data_audit', 'context_export',
-        'xlsx_preview', 'import_xlsx', 'full_export',
-        'project_list', 'project_context_export', 'project_xlsx_export',
-        'barcode_lookup', 'read_records'
+        'xlsx_preview', 'import_xlsx', 'full_export', 'project_list',
+        'project_context_export', 'project_xlsx_export', 'barcode_lookup', 'read_records'
+      ],
+      import_notes: [
+        'import_xlsx now caches fields/model/xmlid per request',
+        'image_url is not imported unless payload.options.import_images=true',
+        `default max rows per request: ${DEFAULT_IMPORT_ROWS}`
       ]
     });
   }
+
   if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Method tidak didukung.' });
 
   try {
@@ -48,9 +63,9 @@ module.exports = async function handler(req, res) {
     if (action === 'health') return json(res, 200, { ok: true, time: new Date().toISOString() });
 
     const requireTargetActions = new Set([
-      'test_connection', 'schema_scan', 'data_audit', 'context_export',
-      'xlsx_preview', 'import_xlsx', 'full_export', 'project_list',
-      'project_context_export', 'project_xlsx_export', 'barcode_lookup', 'read_records'
+      'test_connection', 'schema_scan', 'data_audit', 'context_export', 'xlsx_preview',
+      'import_xlsx', 'full_export', 'project_list', 'project_context_export',
+      'project_xlsx_export', 'barcode_lookup', 'read_records'
     ]);
     if (requireTargetActions.has(action)) validateTarget(target);
 
@@ -113,17 +128,24 @@ function applyCors(res) {
 function json(res, status, body) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
   res.end(JSON.stringify(body));
 }
 
 function readJsonBody(req) {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) return Promise.resolve(req.body);
+  if (typeof req.body === 'string' && req.body.trim()) {
+    try { return Promise.resolve(JSON.parse(req.body)); }
+    catch (_) { return Promise.reject(new UserError('Body request bukan JSON valid.')); }
+  }
+
   return new Promise((resolve, reject) => {
     let raw = '';
     let total = 0;
     req.on('data', chunk => {
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        reject(new UserError('Payload terlalu besar. Kurangi jumlah sheet/baris atau gunakan batch lebih kecil.'));
+        reject(new UserError('Payload terlalu besar.', 'Kurangi jumlah sheet/baris atau gunakan file XLSX yang lebih kecil.'));
         req.destroy();
         return;
       }
@@ -142,26 +164,31 @@ function readJsonBody(req) {
 }
 
 function normalizeTarget(target) {
-  let url = String(target.url || '').trim();
-  url = url.replace(/\/+$/, '').replace(/\/web$/, '');
+  let url = String(target.url || target.host || '').trim();
+  url = url.replace(/\/web\/?$/i, '').replace(/\/+$/, '');
   return {
     url,
     db: String(target.db || target.database || '').trim(),
     username: String(target.username || target.email || target.login || '').trim(),
-    password: String(target.password || target.apiKey || target.api_key || '').trim()
+    password: String(target.password || target.apiKey || target.api_key || target.key || '').trim()
   };
 }
 
 function validateTarget(target) {
-  if (!target.url || !/^https?:\/\//i.test(target.url)) throw new UserError('URL Odoo tidak valid.', 'Contoh: https://edu-lokalmart.odoo.com');
+  if (!target.url || !/^https?:\/\//i.test(target.url)) {
+    throw new UserError('URL Odoo tidak valid.', 'Contoh: https://edu-lokalmart.odoo.com. Jangan pakai /web di belakang URL.');
+  }
   if (!target.db) throw new UserError('Database Odoo kosong.', 'Contoh: edu-lokalmart');
   if (!target.username) throw new UserError('Username/email Odoo kosong.');
-  if (!target.password) throw new UserError('Password/API key kosong.', 'Untuk Odoo Online, gunakan API Key sebagai pengganti password.');
+  if (!target.password) throw new UserError('Password/API key kosong.', 'Untuk Odoo Online, gunakan API Key sebagai pengganti password login web.');
 }
 
 function createOdooClient(target) {
   let uidCache = null;
   let loginPromise = null;
+  const modelCache = new Map();
+  const fieldsCache = new Map();
+  const xmlidCache = new Map();
 
   async function jsonRpc(service, method, args) {
     const id = Date.now() + Math.random();
@@ -173,8 +200,12 @@ function createOdooClient(target) {
     const text = await response.text();
     let data;
     try { data = JSON.parse(text); }
-    catch (e) {
-      throw new UserError(`Odoo mengembalikan non-JSON HTTP ${response.status}.`, 'Cek URL Odoo. Jangan pakai /web di belakang URL.', text.slice(0, 1200));
+    catch (_) {
+      throw new UserError(
+        `Odoo mengembalikan non-JSON HTTP ${response.status}.`,
+        'Cek URL Odoo. Jangan pakai /web di belakang URL.',
+        text.slice(0, 1200)
+      );
     }
     if (!response.ok) throw new UserError(`Odoo HTTP ${response.status}`, undefined, data);
     if (data.error) {
@@ -188,47 +219,54 @@ function createOdooClient(target) {
   async function login() {
     if (uidCache) return { uid: uidCache };
     if (!loginPromise) {
-      loginPromise = jsonRpc('common', 'login', [target.db, target.username, target.password])
-        .then(uid => {
-          if (!uid) {
-            throw new UserError(
-              `Login Odoo gagal untuk database "${target.db}" dan user "${target.username}".`,
-              'Gunakan API Key Odoo sebagai password. Pastikan database dan email user benar.'
-            );
-          }
-          uidCache = uid;
-          return { uid };
-        });
+      loginPromise = (async () => {
+        let uid = await jsonRpc('common', 'authenticate', [target.db, target.username, target.password, {}]);
+        if (!uid) uid = await jsonRpc('common', 'login', [target.db, target.username, target.password]);
+        if (!uid) {
+          throw new UserError(
+            `Login Odoo gagal untuk database "${target.db}" dan user "${target.username}".`,
+            'Gunakan API Key Odoo sebagai password. Pastikan database dan email user benar.'
+          );
+        }
+        uidCache = uid;
+        return { uid };
+      })();
     }
     return loginPromise;
   }
 
   async function execute(model, method, args = [], kwargs = {}) {
     const session = await login();
-    return jsonRpc('object', 'execute_kw', [target.db, session.uid, target.password, model, method, args, kwargs]);
+    return jsonRpc('object', 'execute_kw', [target.db, session.uid, target.password, model, method, args, kwargs || {}]);
   }
 
-  return { target, login, execute };
+  return { target, login, execute, modelCache, fieldsCache, xmlidCache };
 }
 
 async function safeExecute(ctx, model, method, args = [], kwargs = {}, fallback = null) {
   try { return await ctx.execute(model, method, args, kwargs); }
-  catch (e) { return fallback; }
+  catch (_) { return fallback; }
 }
 
 async function modelExists(ctx, model) {
+  if (ctx.modelCache.has(model)) return ctx.modelCache.get(model);
   const ids = await safeExecute(ctx, 'ir.model', 'search', [[[ 'model', '=', model ]]], { limit: 1 }, []);
-  return Array.isArray(ids) && ids.length > 0;
+  const ok = Array.isArray(ids) && ids.length > 0;
+  ctx.modelCache.set(model, ok);
+  return ok;
 }
 
 async function fieldsGet(ctx, model) {
-  return await ctx.execute(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'required', 'readonly'] });
+  if (ctx.fieldsCache.has(model)) return ctx.fieldsCache.get(model);
+  const fields = await ctx.execute(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'required', 'readonly', 'selection'] });
+  ctx.fieldsCache.set(model, fields || {});
+  return fields || {};
 }
 
 function parseCsvList(value, fallback = []) {
   if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
-  if (!value) return fallback;
-  return String(value).split(/[\n,]+/).map(v => v.trim()).filter(Boolean);
+  if (value === null || value === undefined || value === '') return fallback;
+  return String(value).split(/[\n,;|]+/).map(v => v.trim()).filter(Boolean);
 }
 
 function normalizeLimit(value, fallback = DEFAULT_LIMIT, max = 2000) {
@@ -239,9 +277,9 @@ function normalizeLimit(value, fallback = DEFAULT_LIMIT, max = 2000) {
 
 async function schemaScan(ctx, payload = {}) {
   const defaultModels = [
-    'project.project', 'project.task', 'project.milestone', 'project.update',
-    'knowledge.article', 'product.template', 'product.product', 'product.category',
-    'res.partner', 'sale.order', 'sale.order.line', 'ir.model', 'ir.model.fields'
+    'project.project', 'project.task', 'project.milestone', 'project.update', 'knowledge.article',
+    'product.template', 'product.product', 'product.category', 'res.partner', 'sale.order',
+    'sale.order.line', 'ir.model', 'ir.model.fields'
   ];
   const models = parseCsvList(payload.models, defaultModels);
   const out = [];
@@ -252,7 +290,9 @@ async function schemaScan(ctx, payload = {}) {
       continue;
     }
     const fg = await fieldsGet(ctx, model);
-    const fields = Object.entries(fg).map(([name, meta]) => ({ name, ...meta })).sort((a, b) => a.name.localeCompare(b.name));
+    const fields = Object.entries(fg)
+      .map(([name, meta]) => ({ name, ...meta }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     out.push({ model, exists: true, field_count: fields.length, fields });
   }
   const customModels = await safeExecute(ctx, 'ir.model', 'search_read', [[[ 'model', 'like', 'x_' ]]], { fields: ['id', 'name', 'model', 'state'], limit: 200 }, []);
@@ -261,9 +301,9 @@ async function schemaScan(ctx, payload = {}) {
 
 async function dataAudit(ctx, payload = {}) {
   const models = parseCsvList(payload.models, [
-    'project.project', 'project.task', 'project.milestone', 'project.update',
-    'knowledge.article', 'product.template', 'product.product', 'res.partner',
-    'sale.order', 'sale.order.line', 'ir.model.fields', 'ir.ui.view'
+    'project.project', 'project.task', 'project.milestone', 'project.update', 'knowledge.article',
+    'product.template', 'product.product', 'res.partner', 'sale.order', 'sale.order.line',
+    'ir.model.fields', 'ir.ui.view'
   ]);
   const counts = [];
   for (const model of models) {
@@ -274,23 +314,23 @@ async function dataAudit(ctx, payload = {}) {
     const count = await safeExecute(ctx, model, 'search_count', [[]], {}, null);
     counts.push({ model, exists: true, count });
   }
-
   const taskFields = await safeExecute(ctx, 'project.task', 'fields_get', [], { attributes: ['type', 'relation'] }, {});
   const hasParent = !!taskFields?.parent_id;
-  const orphanDomain = hasParent ? [[['project_id', '!=', false], ['parent_id', '=', false]]] : [[['project_id', '!=', false]]];
-  const topTasks = await safeExecute(ctx, 'project.task', 'search_read', orphanDomain, {
-    fields: ['id', 'name', 'project_id', 'stage_id', 'parent_id'],
-    limit: 100,
-    order: 'project_id,name'
-  }, []);
-
+  const topTasks = await safeExecute(
+    ctx,
+    'project.task',
+    'search_read',
+    hasParent ? [[[ 'project_id', '!=', false ], [ 'parent_id', '=', false ]]] : [[[ 'project_id', '!=', false ]]],
+    { fields: ['id', 'name', 'project_id', 'stage_id', 'parent_id'], limit: 100, order: 'project_id,name' },
+    []
+  );
   return {
     audited_at: new Date().toISOString(),
     counts,
     task_parent_field_exists: hasParent,
     top_level_tasks_sample: topTasks,
     notes: [
-      'Top-level task bukan selalu error; tetapi untuk Ground Zero user biasanya ingin semua ide punya parent hierarki.',
+      'Top-level task bukan selalu error; tetapi untuk Ground Zero biasanya ide harus berada dalam hierarki parent.',
       'Gunakan Project Export untuk membaca konteks satu project secara mendalam.'
     ]
   };
@@ -322,23 +362,36 @@ async function contextExport(ctx, payload = {}) {
 
 async function defaultReadableFields(ctx, model) {
   const fg = await fieldsGet(ctx, model);
-  const preferred = ['id', 'display_name', 'name', 'active', 'sequence', 'create_date', 'write_date', 'user_id', 'project_id', 'parent_id', 'stage_id', 'partner_id', 'company_id', 'description', 'date_start', 'date_end', 'deadline', 'barcode', 'list_price', 'standard_price', 'categ_id', 'type', 'model', 'state'];
+  const preferred = [
+    'id', 'display_name', 'name', 'active', 'sequence', 'create_date', 'write_date',
+    'user_id', 'project_id', 'parent_id', 'stage_id', 'partner_id', 'company_id',
+    'description', 'date_start', 'date_end', 'deadline', 'date_deadline', 'barcode',
+    'list_price', 'standard_price', 'categ_id', 'type', 'model', 'state'
+  ];
   const fields = preferred.filter(f => fg[f]);
   Object.keys(fg).filter(f => f.startsWith('x_')).slice(0, 25).forEach(f => fields.push(f));
   return [...new Set(fields)].slice(0, 80);
 }
 
 function workbookFromBase64(payload) {
-  const b64 = payload.file_base64 || payload.base64 || '';
+  const b64 = payload.file_base64 || payload.base64 || payload.file || '';
   if (!b64) throw new UserError('File XLSX kosong.');
   const clean = String(b64).includes(',') ? String(b64).split(',').pop() : String(b64);
   const buf = Buffer.from(clean, 'base64');
-  return XLSX.read(buf, { type: 'buffer', cellDates: true });
+  return XLSX.read(buf, { type: 'buffer', cellDates: true, cellNF: false, cellText: false });
 }
 
 function sheetToRows(workbook, sheetName) {
   const sheet = workbook.Sheets[sheetName];
-  return XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false, blankrows: false });
+  return rows.filter(row => Object.values(row).some(v => !isBlank(v)));
+}
+
+function sheetShouldImport(sheetName, rows) {
+  const normalized = String(sheetName || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (HELPER_SHEETS.has(normalized)) return false;
+  if (String(sheetName || '').includes('.')) return true;
+  return rows.some(r => String(r._model || r.__model || '').trim());
 }
 
 function xlsxPreview(payload = {}) {
@@ -346,12 +399,13 @@ function xlsxPreview(payload = {}) {
   const sheets = workbook.SheetNames.map(name => {
     const rows = sheetToRows(workbook, name);
     const columns = rows.length ? Object.keys(rows[0]) : [];
-    const models = [...new Set(rows.map(r => String(r._model || '').trim()).filter(Boolean))];
+    const models = [...new Set(rows.map(r => String(r._model || r.__model || '').trim()).filter(Boolean))];
     return {
       sheet: name,
       rows: rows.length,
       columns,
       models,
+      importable: sheetShouldImport(name, rows),
       sample: rows.slice(0, 3)
     };
   });
@@ -361,25 +415,60 @@ function xlsxPreview(payload = {}) {
 async function importXlsx(ctx, payload = {}) {
   const workbook = workbookFromBase64(payload);
   const options = payload.options || {};
-  const maxRows = normalizeLimit(options.max_rows || payload.max_rows, 2000, 10000);
+  const hardMax = options.force_large ? LARGE_IMPORT_CAP : SAFE_IMPORT_CAP;
+  const maxRows = normalizeLimit(options.max_rows || payload.max_rows, DEFAULT_IMPORT_ROWS, hardMax);
   const continueOnError = options.continue_on_error !== false;
   const onlySheets = parseCsvList(options.sheets || payload.sheets, []);
-  const result = { started_at: new Date().toISOString(), processed: 0, created: 0, updated: 0, skipped: 0, errors: [], warnings: [], sheets: [] };
+  const importImages = options.import_images === true || payload.import_images === true;
+  const dryRun = options.dry_run === true || payload.dry_run === true;
+
+  const result = {
+    started_at: new Date().toISOString(),
+    processed: 0,
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    archived: 0,
+    skipped: 0,
+    errors: [],
+    warnings: [],
+    sheets: [],
+    truncated: false,
+    settings: { maxRows, continueOnError, importImages, dryRun, forceLarge: !!options.force_large }
+  };
 
   for (const sheetName of workbook.SheetNames) {
     if (onlySheets.length && !onlySheets.includes(sheetName)) continue;
     const rows = sheetToRows(workbook, sheetName);
-    const sheetResult = { sheet: sheetName, processed: 0, created: 0, updated: 0, skipped: 0, errors: [] };
-    for (let i = 0; i < rows.length && result.processed < maxRows; i++) {
+    const sheetResult = { sheet: sheetName, importable: true, processed: 0, created: 0, updated: 0, deleted: 0, archived: 0, skipped: 0, errors: [], warnings: [] };
+
+    if (!sheetShouldImport(sheetName, rows)) {
+      sheetResult.importable = false;
+      sheetResult.skipped = rows.length;
+      sheetResult.warnings.push('Sheet dilewati karena bukan sheet model Odoo dan tidak punya kolom _model.');
+      result.sheets.push(sheetResult);
+      result.skipped += rows.length;
+      continue;
+    }
+
+    for (let i = 0; i < rows.length; i++) {
+      if (result.processed >= maxRows) {
+        result.truncated = true;
+        sheetResult.warnings.push(`Import dihentikan aman di batas ${maxRows} row/request. Jalankan lagi dengan sheet/row berikutnya atau force_large=true jika benar-benar perlu.`);
+        break;
+      }
       const rowNumber = i + 2;
       const row = rows[i];
       try {
-        const one = await importOneRow(ctx, row, sheetName);
+        const one = await importOneRow(ctx, row, sheetName, { importImages, dryRun });
         sheetResult.processed++;
         result.processed++;
-        if (one.status === 'created') { sheetResult.created++; result.created++; }
-        else if (one.status === 'updated') { sheetResult.updated++; result.updated++; }
-        else { sheetResult.skipped++; result.skipped++; }
+        countStatus(one.status, sheetResult, result);
+        for (const warning of one.warnings || []) {
+          const msg = `${sheetName} row ${rowNumber}: ${warning}`;
+          pushLimited(sheetResult.warnings, msg, 80);
+          pushLimited(result.warnings, msg, 250);
+        }
       } catch (e) {
         const msg = `${sheetName} row ${rowNumber}: ${e.message}`;
         sheetResult.errors.push(msg);
@@ -387,51 +476,84 @@ async function importXlsx(ctx, payload = {}) {
         if (!continueOnError) throw e;
       }
     }
+
     result.sheets.push(sheetResult);
+    if (result.truncated) break;
   }
+
   result.finished_at = new Date().toISOString();
+  result.cache_stats = {
+    models: ctx.modelCache.size,
+    fields: ctx.fieldsCache.size,
+    xmlids: ctx.xmlidCache.size
+  };
   return result;
 }
 
-async function importOneRow(ctx, row, sheetName) {
-  const clean = cleanRow(row);
-  const model = String(clean._model || guessModelFromSheet(sheetName) || '').trim();
-  const action = String(clean.__action || clean.action || 'upsert').trim().toLowerCase();
-  const externalId = String(clean._external_id || clean.external_id || '').trim();
-  if (!model) throw new UserError('Model kosong. Isi _model di sheet atau pakai nama sheet sebagai model.');
-  if (action === 'skip' || action === 'noop') return { status: 'skipped' };
-  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
+function countStatus(status, sheetResult, result) {
+  if (status === 'created') { sheetResult.created++; result.created++; }
+  else if (status === 'updated') { sheetResult.updated++; result.updated++; }
+  else if (status === 'deleted') { sheetResult.deleted++; result.deleted++; }
+  else if (status === 'archived') { sheetResult.archived++; result.archived++; }
+  else { sheetResult.skipped++; result.skipped++; }
+}
 
+function pushLimited(arr, value, max) {
+  if (arr.length < max) arr.push(value);
+  else if (arr.length === max) arr.push(`... warning lain disembunyikan setelah ${max} item.`);
+}
+
+async function importOneRow(ctx, row, sheetName, options = {}) {
+  const clean = cleanRow(row);
+  const warnings = [];
+  const model = String(clean._model || clean.__model || guessModelFromSheet(sheetName) || '').trim();
+  const action = String(clean.__action || clean._action || clean.action || 'upsert').trim().toLowerCase();
+  const externalId = String(clean._external_id || clean.external_id || '').trim();
+
+  if (!model) throw new UserError('Model kosong. Isi _model di sheet atau pakai nama sheet sebagai model.');
+  if (action === 'skip' || action === 'noop') return { status: 'skipped', warnings };
+
+  if (!(await modelExists(ctx, model))) throw new UserError(`Model tidak ditemukan atau tidak bisa diakses: ${model}`);
   const fieldsMeta = await fieldsGet(ctx, model);
+
   let existingId = null;
   if (externalId) existingId = await resolveExternalId(ctx, externalId, model);
   if (!existingId && clean.id && ['update', 'upsert', 'delete', 'archive'].includes(action)) existingId = Number(clean.id);
 
   if (action === 'delete') {
-    if (!existingId) return { status: 'skipped' };
-    await ctx.execute(model, 'unlink', [[existingId]]);
-    return { status: 'deleted', id: existingId };
+    if (!existingId) return { status: 'skipped', warnings: ['Delete dilewati karena record tidak ditemukan.'] };
+    if (!options.dryRun) await ctx.execute(model, 'unlink', [[existingId]]);
+    return { status: 'deleted', id: existingId, warnings };
   }
 
   if (action === 'archive') {
-    if (!existingId) return { status: 'skipped' };
+    if (!existingId) return { status: 'skipped', warnings: ['Archive dilewati karena record tidak ditemukan.'] };
     if (!fieldsMeta.active) throw new UserError(`Model ${model} tidak punya field active untuk archive.`);
-    await ctx.execute(model, 'write', [[existingId], { active: false }]);
-    return { status: 'archived', id: existingId };
+    if (!options.dryRun) await ctx.execute(model, 'write', [[existingId], { active: false }]);
+    return { status: 'archived', id: existingId, warnings };
   }
 
-  const vals = await rowToVals(ctx, clean, model, fieldsMeta);
-  if (Object.keys(vals).length === 0) return { status: 'skipped' };
+  const converted = await rowToVals(ctx, clean, model, fieldsMeta, options);
+  const vals = converted.vals;
+  warnings.push(...converted.warnings);
+
+  if (Object.keys(vals).length === 0) return { status: 'skipped', warnings: warnings.concat('Tidak ada value yang bisa diwrite/create.') };
 
   if (existingId) {
-    await ctx.execute(model, 'write', [[existingId], vals]);
-    return { status: 'updated', id: existingId };
+    if (!options.dryRun) await ctx.execute(model, 'write', [[existingId], vals]);
+    return { status: 'updated', id: existingId, warnings };
   }
 
-  if (action === 'update') throw new UserError(`Record untuk update tidak ditemukan: ${externalId || clean.id || '(tanpa id)'}`);
-  const newId = await ctx.execute(model, 'create', [vals]);
-  if (externalId) await createExternalId(ctx, externalId, model, newId);
-  return { status: 'created', id: newId };
+  if (action === 'update' || action === 'write') {
+    throw new UserError(`Record untuk update tidak ditemukan: ${externalId || clean.id || '(tanpa id)'}`);
+  }
+
+  let newId = null;
+  if (!options.dryRun) {
+    newId = await ctx.execute(model, 'create', [vals]);
+    if (externalId) await createExternalId(ctx, externalId, model, newId);
+  }
+  return { status: 'created', id: newId, warnings };
 }
 
 function cleanRow(row) {
@@ -450,24 +572,34 @@ function guessModelFromSheet(sheetName) {
   return '';
 }
 
-async function rowToVals(ctx, row, model, fieldsMeta) {
+async function rowToVals(ctx, row, model, fieldsMeta, options = {}) {
   const vals = {};
+  const warnings = [];
   const handled = new Set();
 
   for (const [key, value] of Object.entries(row)) {
     if (key.endsWith('_external_id') && key !== '_external_id') {
       const field = key.slice(0, -'_external_id'.length);
-      if (!fieldsMeta[field]) continue;
+      handled.add(key);
+      handled.add(field);
+      if (!fieldsMeta[field]) {
+        warnings.push(`Kolom ${key} dilewati: field ${field} tidak ada di ${model}.`);
+        continue;
+      }
       if (isBlank(value)) continue;
       const id = await resolveExternalId(ctx, String(value).trim(), fieldsMeta[field].relation || null);
       if (!id) throw new UserError(`External ID tidak ditemukan untuk ${key}: ${value}`);
       vals[field] = id;
-      handled.add(key);
-      handled.add(field);
     }
+
     if (key.endsWith('_external_ids')) {
       const field = key.slice(0, -'_external_ids'.length);
-      if (!fieldsMeta[field]) continue;
+      handled.add(key);
+      handled.add(field);
+      if (!fieldsMeta[field]) {
+        warnings.push(`Kolom ${key} dilewati: field ${field} tidak ada di ${model}.`);
+        continue;
+      }
       const ids = [];
       for (const xmlid of parseCsvList(value, [])) {
         const id = await resolveExternalId(ctx, xmlid, fieldsMeta[field].relation || null);
@@ -475,44 +607,83 @@ async function rowToVals(ctx, row, model, fieldsMeta) {
         ids.push(id);
       }
       vals[field] = [[6, 0, ids]];
-      handled.add(key);
-      handled.add(field);
     }
   }
 
   if (row.image_url && fieldsMeta.image_1920) {
-    const image = await fetchImageAsBase64(row.image_url);
-    if (image) vals.image_1920 = image;
     handled.add('image_url');
+    if (options.importImages === true) {
+      const image = await fetchImageAsBase64(row.image_url);
+      if (image) vals.image_1920 = image;
+      else warnings.push('image_url tidak berhasil diambil atau terlalu besar; foto dilewati.');
+    } else {
+      warnings.push('image_url tidak diimport otomatis. Gunakan options.import_images=true atau simpan sebagai x_source_image_url.');
+    }
   }
 
   for (const [key, value] of Object.entries(row)) {
     if (handled.has(key)) continue;
-    if (key.startsWith('_') || key === '__action' || key === 'action' || key === 'external_id' || key === 'id') continue;
+    if (key.startsWith('_') || ['__action', '_action', 'action', 'external_id', 'id'].includes(key)) continue;
     if (key.endsWith('_external_id') || key.endsWith('_external_ids')) continue;
     if (key === 'image_url') continue;
+
     const meta = fieldsMeta[key];
-    if (!meta) continue;
+    if (!meta) {
+      // Banyak file ChatGPT punya kolom bantuan. Jangan bikin warning banjir kecuali strict.
+      if (options.strictFields) warnings.push(`Kolom ${key} dilewati: field tidak ada di ${model}.`);
+      continue;
+    }
     if (meta.readonly && !meta.required) continue;
     if (isBlank(value)) continue;
-    vals[key] = castValue(value, meta.type);
+
+    const casted = castValue(value, meta);
+    if (casted === undefined) {
+      warnings.push(`Kolom ${key} dilewati: format tidak cocok untuk field ${meta.type}.`);
+      continue;
+    }
+    vals[key] = casted;
   }
-  return vals;
+
+  return { vals, warnings };
 }
 
 function isBlank(value) {
   return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
 }
 
-function castValue(value, type) {
+function castValue(value, meta) {
+  const type = meta.type;
   if (type === 'boolean') {
     const s = String(value).toLowerCase().trim();
-    return ['1', 'true', 'yes', 'y', 'ya', 'iya', 'aktif'].includes(s);
+    if (['1', 'true', 'yes', 'y', 'ya', 'iya', 'aktif', 'published'].includes(s)) return true;
+    if (['0', 'false', 'no', 'n', 'tidak', 'nonaktif', 'draft'].includes(s)) return false;
+    return Boolean(value);
   }
   if (type === 'integer') return Number.parseInt(value, 10) || 0;
   if (type === 'float' || type === 'monetary') return Number.parseFloat(String(value).replace(',', '.')) || 0;
-  if (type === 'date' || type === 'datetime') return String(value).trim();
+  if (type === 'date') return toOdooDate(value);
+  if (type === 'datetime') return toOdooDatetime(value);
+  if (type === 'many2one') {
+    if (typeof value === 'number') return value;
+    if (/^\d+$/.test(String(value))) return Number.parseInt(value, 10);
+    return undefined;
+  }
+  if (type === 'many2many') {
+    const ids = parseCsvList(value, []).map(v => Number.parseInt(v, 10)).filter(Number.isFinite);
+    return [[6, 0, ids]];
+  }
   return value;
+}
+
+function toOdooDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  const s = String(value).trim();
+  return s ? s.slice(0, 10) : false;
+}
+
+function toOdooDatetime(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().replace('T', ' ').slice(0, 19);
+  return String(value).trim();
 }
 
 function splitXmlId(xmlid) {
@@ -532,18 +703,30 @@ function safeXmlPart(value) {
 async function resolveExternalId(ctx, xmlid, expectedModel = null) {
   const parts = splitXmlId(xmlid);
   if (!parts) return null;
-  const rows = await ctx.execute('ir.model.data', 'search_read', [[[ 'module', '=', parts.module ], [ 'name', '=', parts.name ]]], { fields: ['id', 'model', 'res_id'], limit: 1 });
-  if (!rows.length) return null;
-  if (expectedModel && rows[0].model !== expectedModel) return null;
-  return rows[0].res_id;
+  const cacheKey = `${parts.module}.${parts.name}|${expectedModel || ''}`;
+  if (ctx.xmlidCache.has(cacheKey)) return ctx.xmlidCache.get(cacheKey);
+
+  const rows = await ctx.execute('ir.model.data', 'search_read', [[[ 'module', '=', parts.module ], [ 'name', '=', parts.name ]]], { fields: ['id', 'module', 'name', 'model', 'res_id'], limit: 1 });
+  let result = null;
+  if (rows.length && (!expectedModel || rows[0].model === expectedModel)) result = rows[0].res_id;
+  ctx.xmlidCache.set(cacheKey, result);
+  return result;
 }
 
 async function createExternalId(ctx, xmlid, model, resId) {
   const parts = splitXmlId(xmlid);
   if (!parts) return null;
-  const existing = await resolveExternalId(ctx, xmlid, model);
-  if (existing) return existing;
-  return ctx.execute('ir.model.data', 'create', [{ module: parts.module, name: parts.name, model, res_id: resId, noupdate: true }]);
+  const rawRows = await ctx.execute('ir.model.data', 'search_read', [[[ 'module', '=', parts.module ], [ 'name', '=', parts.name ]]], { fields: ['id', 'model', 'res_id'], limit: 1 });
+  if (rawRows.length) {
+    if (rawRows[0].model !== model || rawRows[0].res_id !== resId) {
+      throw new UserError(`External ID sudah dipakai oleh record lain: ${parts.module}.${parts.name}`);
+    }
+    return rawRows[0].res_id;
+  }
+  await ctx.execute('ir.model.data', 'create', [{ module: parts.module, name: parts.name, model, res_id: resId, noupdate: true }]);
+  ctx.xmlidCache.set(`${parts.module}.${parts.name}|${model}`, resId);
+  ctx.xmlidCache.set(`${parts.module}.${parts.name}|`, resId);
+  return resId;
 }
 
 async function fetchImageAsBase64(url) {
@@ -553,14 +736,17 @@ async function fetchImageAsBase64(url) {
     const ab = await response.arrayBuffer();
     if (ab.byteLength > 5 * 1024 * 1024) return null;
     return Buffer.from(ab).toString('base64');
-  } catch (e) { return null; }
+  } catch (_) {
+    return null;
+  }
 }
 
 async function fullExport(ctx, payload = {}) {
   const models = parseCsvList(payload.models, ['project.project', 'project.task', 'knowledge.article', 'product.template']);
-  const limit = normalizeLimit(payload.limit, 500, 5000);
+  const limit = normalizeLimit(payload.limit, 300, 3000);
   const format = String(payload.format || 'json').toLowerCase();
   const result = { generated_at: new Date().toISOString(), target: { url: ctx.target.url, db: ctx.target.db }, models: {} };
+
   for (const model of models) {
     if (!(await modelExists(ctx, model))) {
       result.models[model] = { exists: false, records: [] };
@@ -570,6 +756,7 @@ async function fullExport(ctx, payload = {}) {
     const records = await ctx.execute(model, 'search_read', [[]], { fields, limit, order: 'write_date desc' });
     result.models[model] = { exists: true, fields, records };
   }
+
   if (format === 'xlsx') {
     return { file_name: `lokalmart_full_export_${dateStamp()}.xlsx`, mime: XLSX_MIME, base64: objectToWorkbookBase64(result.models) };
   }
@@ -580,16 +767,14 @@ async function projectList(ctx, payload = {}) {
   const limit = normalizeLimit(payload.limit, 200, 1000);
   const domain = [];
   if (payload.search) domain.push(['name', 'ilike', String(payload.search)]);
-  return await ctx.execute('project.project', 'search_read', [domain], {
-    fields: ['id', 'name', 'display_name', 'active', 'user_id', 'partner_id', 'company_id', 'create_date', 'write_date'],
-    limit,
-    order: 'write_date desc'
-  });
+  const fields = await safeFields(ctx, 'project.project', ['id', 'name', 'display_name', 'active', 'user_id', 'partner_id', 'company_id', 'create_date', 'write_date']);
+  return await ctx.execute('project.project', 'search_read', [domain], { fields, limit, order: 'write_date desc' });
 }
 
 async function projectContextExport(ctx, payload = {}) {
-  const projectId = Number(payload.project_id || payload.id || 0);
+  const projectId = Number(payload.project_id || payload.projectId || payload.id || 0);
   if (!projectId) throw new UserError('project_id kosong. Pilih project dulu.');
+
   const projectFields = await safeFields(ctx, 'project.project', ['id', 'name', 'display_name', 'active', 'user_id', 'partner_id', 'company_id', 'create_date', 'write_date', 'description']);
   const projectArr = await ctx.execute('project.project', 'read', [[projectId], projectFields]);
   if (!projectArr.length) throw new UserError(`Project ID ${projectId} tidak ditemukan.`);
@@ -606,7 +791,7 @@ async function projectContextExport(ctx, payload = {}) {
   const messagesTasks = taskIds.length ? await readIfModel(ctx, 'mail.message', [[[ 'model', '=', 'project.task' ], [ 'res_id', 'in', taskIds.slice(0, 800) ]]], ['id', 'subject', 'body', 'date', 'author_id', 'message_type', 'res_id'], 500) : [];
   const xmlids = await exportXmlIds(ctx, ['project.project', 'project.task', 'project.milestone'], [projectId, ...taskIds, ...milestones.map(m => m.id)]);
 
-  const context = {
+  return {
     kind: 'lokalmart_project_context',
     generated_at: new Date().toISOString(),
     target: { url: ctx.target.url, db: ctx.target.db, username: ctx.target.username },
@@ -620,7 +805,6 @@ async function projectContextExport(ctx, payload = {}) {
     external_ids: xmlids,
     prompt_for_chatgpt: buildProjectPrompt(project, tasks, milestones, updates)
   };
-  return context;
 }
 
 async function projectXlsxExport(ctx, payload = {}) {
@@ -685,16 +869,23 @@ function flattenHierarchy(nodes, level = 0, parent = '') {
   return out;
 }
 
-function pairName(value) {
-  return Array.isArray(value) ? value[1] : value;
-}
+function pairName(value) { return Array.isArray(value) ? value[1] : value; }
 
 function sanitizeMessages(messages) {
   return (messages || []).map(m => ({ ...m, body: stripHtml(m.body || '').slice(0, 4000) }));
 }
 
 function stripHtml(html) {
-  return String(html || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(html || '')
+    .replace(/<br\s*\/?\s*>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function buildProjectPrompt(project, tasks, milestones, updates) {
@@ -723,8 +914,6 @@ async function readRecords(ctx, payload = {}) {
   const fields = parseCsvList(payload.fields, await defaultReadableFields(ctx, model));
   return await ctx.execute(model, 'search_read', [domain], { fields, limit, order: payload.order || 'write_date desc' });
 }
-
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function objectToWorkbookBase64(sheets) {
   const wb = XLSX.utils.book_new();
@@ -756,14 +945,6 @@ function flattenRecord(row, prefix = '', out = {}) {
   return out;
 }
 
-function safeSheetName(name) {
-  return String(name || 'sheet').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31) || 'sheet';
-}
-
-function sanitizeFilename(name) {
-  return String(name || 'export.xlsx').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 120);
-}
-
-function dateStamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-}
+function safeSheetName(name) { return String(name || 'sheet').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31) || 'sheet'; }
+function sanitizeFilename(name) { return String(name || 'export.xlsx').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 120); }
+function dateStamp() { return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19); }
